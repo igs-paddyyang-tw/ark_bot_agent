@@ -1,0 +1,5 @@
+# wheel 走 GitHub Release，不進版控（比照 ark_team_agent）
+dist/
+build/
+*.egg-info/
+__pycache__/
