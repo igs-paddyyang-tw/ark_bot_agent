@@ -5,11 +5,113 @@
 > 所以 0.2.0 ~ 0.4.0 全部同日。
 >
 > ⚠️ **有 GitHub Release 的是 `v0.2.0` / `v0.4.1` / `v0.4.3`**（tag 三個）。
-> **`0.3.0` / `0.3.1` / `0.4.0` / `0.4.2` 只有本機 wheel**，沒有發布 ——
+> **`0.3.0` / `0.3.1` / `0.4.0` / `0.4.2` / `0.5.0` / `0.5.1` 只有本機 wheel**，沒有發布 ——
 > 讀這份的人會預設每一條都拿得到 asset，所以要講明。
 > `v0.4.3` 的 release notes **同時涵蓋 0.4.2**（0.4.2 未單獨發版）。
 >
 > nana-bot 實裝 **0.4.3**（sha256 與 release asset 逐位元組核對一致）。
+
+## [0.5.1] — 2026-08-18
+
+**AgentPool 四缺口 + per-agent timeout**（M2）。純增益，無破壞性。
+
+四個缺口都是「原本沒有」而不是「原本有別的值」：
+
+| 缺口 | 原本 | 風險 |
+|------|------|------|
+| queue 上限 | `asyncio.Queue()` **無上限** | 無背壓，只會無聲堆積 |
+| idle 回收 | 無 | 8 個常駐 kiro-cli 永不釋放 |
+| health loop | 無 | 進程死了沒人知道 |
+| crash 計數 | 無 | 崩潰迴圈偵測不到 |
+
+> 不是新設計 —— `ark_team_agent` 的 lazy spawn + `idle_timeout_minutes`
+> 在 slot 上驗證過（13 instances、閒置 30 分回收）。
+> **兩個套件不共用程式碼，但該共用經驗。**
+
+### Added
+
+- `AgentProcess.idle_seconds` / `crash_count` / `max_queue`
+- `agent.cli._health_loop()` —— 崩潰偵測 + idle 回收；`pool_status()` 給 API 用
+- `backend.max_queue` / `backend.idle_timeout` / `backend.crash_window`（`bot.yaml` 驅動）
+- `AgentDef.timeout` —— per-agent 逾時。實測 `data` 37s / `report` 50s /
+  **`ai-dev` 123s**，全體共用一個值必然有一邊不對。
+  解析順序：呼叫端 → per-agent → 全域；**未設定時 120s，與 0.4.3 完全同值**
+
+### 三個關鍵決策
+
+1. **queue 溢出丟最舊的，且被丟的那則必須收到結果** ——
+   最新的是使用者剛送的，丟它使用者立刻感覺到沒反應。
+   🔴 但被丟的 future 不能懸掛 —— 那是永不完成的 await，**比丟掉更糟**
+2. **crash 用時間窗不用累計** —— 累計值會讓長時間運行的健康服務
+   慢慢累積到誤觸上限（`ark_team_agent` 1.2.14 的教訓）
+3. **health loop 出錯不停迴圈** —— 停掉等於回收與偵測都沒了，而且無聲
+
+### 最重要的一條測試
+
+`test_health_loop_recycles_idle_and_keeps_persistent` 測**整條路**：
+閒置 → 回收 → **還叫得回來**。
+
+> slot 踩過的坑是 `auto_start: false` 讓進程**連 lazy spawn 都叫不起來**
+> （`send_message` 回 `ok:false`，instance 從團隊消失）。
+> 回收機制不得重現那個形狀。
+
+全庫 **1470 passed** / 6 skipped。
+
+---
+
+## [0.5.0] — 2026-08-18
+
+**`CliResult` + 錯誤分類**（M1）。🔴 **破壞性**：`agent_cli_chat()` 回傳型別改變。
+
+補的是「失敗看不出來」。舊回傳 `str | None`，呼叫端分不出四種情況，
+而**失敗是用回傳值表示的，`try/except` 抓不到**：
+
+| 實際發生 | 舊回傳 |
+|---|---|
+| agent 回了空字串 | `None` |
+| 子進程崩潰 | `None` |
+| 逾時 | `None` |
+| CLI 根本沒安裝 | `None` |
+
+前三種該重試，第四種重試一百次也不會好（那是設定問題）。
+
+### Added
+
+- `agent/result.py` —— `CliResult`（`status` / `output` / `error` / `retryable` /
+  `elapsed_ms` / `backend` / `model`）。`partial` 用於「逾時但已有部分輸出」
+- `agent/errors.py` —— `classify()` / `is_retryable()`。
+  **`not_found` 與 `permission` 不可重試**
+- `backend.timeout` / `backend.retries`（**retries 預設 0** ——
+  0.4.3 沒有重試，開新行為要由設定明示，不能因升版就默默多花時間）
+
+### 三個刻意的決策
+
+1. **不叫 `AgentResult`** —— `llm/agent_loop.py` 已有同名類別，
+   撞名會讓 `import` 拿到哪個變成靠順序決定
+2. **不讓它當字串用** —— 不實作 `__str__` 回 output，漏改的呼叫點要立刻
+   `TypeError` 而不是靜默送出物件字串。
+   （`dataclass` 的 `__repr__` 含欄位值是**刻意保留**的，log 需要）
+3. **分類順序：例外先判、`returncode` 最後** ——
+   **逾時被 kill 的子進程也有非 0 returncode**，先看 returncode
+   會把逾時誤分類成 crash，而兩者處置不同（逾時調 timeout、crash 查 agent）
+
+### Changed
+
+- 8 個呼叫點全部更新（`router` 1 · `team_flow` 3 · `handlers` 3 · `dispatch` 1）。
+  另有 `test_all_call_sites_handle_cliresult()` 用 `ast` 掃描守門
+- team_flow 的成員失敗現在**記得出是逾時還是崩潰**（先前一律回空字串）
+
+### 遷移
+
+舊呼叫端把 `reply` 改成 `result.reply_text()` 即語意等價（`None` → `""`），
+判斷式（`if reply:`）不用動。
+
+> ⚠️ **測試 stub 也要照契約回 `CliResult`** ——
+> stub 比實作寬鬆就等於測不到型別改變（本次有 5 個整合測試因此先失敗）。
+
+全庫 1425 → **1457 passed**。
+
+---
 
 ## [0.4.3] — 2026-08-18
 
