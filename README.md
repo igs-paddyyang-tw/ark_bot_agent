@@ -83,6 +83,22 @@ TG 面板只有三顆按鈕：
 注入只是干擾。（其他兩個模式必須注入，因為 agent 讀不到設定檔，
 不明寫它不知道自己該拆解或該收斂。）
 
+#### 執行結果是型別化的
+
+`agent_cli_chat()` 回 **`CliResult`** 而不是 `str | None`：
+
+```python
+res = await agent_cli_chat("查一下服務狀態", agent_id="admin")
+res.status       # success | partial | error
+res.retryable    # not_found / permission → False（那是設定問題，重試無用）
+res.elapsed_ms   # 實際量測
+res.reply_text() # 可直接顯示；error 時回 ""
+```
+
+> 🔴 舊版回 `str | None` —— 呼叫端分不出「空回覆／崩潰／逾時／CLI 沒安裝」，
+> 而**失敗是用回傳值表示的，`try/except` 抓不到**。
+> `partial` 用於「逾時但已讀到部分輸出」—— 部分結果比沒結果好。
+
 ### ⚔️ 團隊 —— 三階段真派工
 
 ```
@@ -103,6 +119,13 @@ ReAct 迴圈在 **Python 層**，不需要 function calling、不需要自建 MC
 
 > 💡 **部分結果比沒結果好**，也比讓人等到硬超時好。
 
+收斂之後可選一個 **verify 階段**（`modes.team.verify`，**預設關**）——
+把答覆交回去檢查有沒有明確錯誤或重大遺漏。有意見**附在後面，不改寫答覆本身**
+（驗證者不是作者），而 verify 失敗**不影響已完成的協作**。
+
+> 這裡刻意做成 hook 而非第四階段 —— 不用它的人不該吃到階段管理的複雜度。
+> 用哪個模型由 `llm.models.verify` 決定，**不寫死廠商**。
+
 降級策略（任何一步失敗都不讓使用者看到錯誤）：
 
 | 情況 | 行為 |
@@ -117,7 +140,7 @@ ReAct 迴圈在 **Python 層**，不需要 function calling、不需要自建 MC
 
 ## 子系統
 
-115 個 `.py`、11 個子套件。
+121 個 `.py`、11 個子套件。
 
 | 子套件 | 檔數 | 做什麼 |
 |--------|:----:|--------|
@@ -129,6 +152,7 @@ ReAct 迴圈在 **Python 層**，不需要 function calling、不需要自建 MC
 | `wiki/` | 8 | 四層搜尋、indexer、engine、lint |
 | `agent/` | 6 | kiro-cli 進程管理、常駐佇列、session |
 | `report/` | 4 | MD-first 報告管線（writer / renderer / sender） |
+| `access.py` | 1 | 權限等級 + 執行期增刪 + 持久化（跨層，故放根層） |
 | `tools/` | 4 | 維運工具 |
 | `conversation/` | 2 | 對話狀態 |
 | `server/` | 2 | FastAPI + 6 個 Web UI 頁面 |
@@ -153,6 +177,50 @@ ReAct 迴圈在 **Python 層**，不需要 function calling、不需要自建 MC
 - `recall` SQLite **FTS5** 全文檢索
 - `consolidate` 週期性壓縮（> 14 天歸檔）
 - `chat_trace` 每則訊息的路由決策軌跡（`/api/chat/traces`）
+
+### Agent 執行池
+
+`kiro-cli` 的呼叫由一個池管理，每個 agent 一條佇列。
+
+| 機制 | 說明 |
+|------|------|
+| **佇列上限** | `backend.max_queue`（預設 32）。滿了**丟最舊的**，而**被丟的那則會收到 `queue overflow` 結果** —— 懸掛的 future 是永不完成的 await，比丟掉更糟 |
+| **idle 回收** | `backend.idle_timeout`（預設 1800s）。`persistent: true` 的 agent 不受此限。**回收 ≠ 永久消失**，下次呼叫叫得回來 |
+| **health loop** | 週期檢查存活；死亡記 crash 並寫 log。迴圈本身出錯**不會停掉**（停掉等於回收與偵測都沒了，而且無聲） |
+| **crash 計數** | **時間窗**（`backend.crash_window`）不是累計 —— 累計值會讓長時間運行的健康服務慢慢累積到誤觸上限 |
+| **per-agent 逾時** | `AgentDef.timeout`。實測 `data` 37s / `report` 50s / **`ai-dev` 123s**，全體共用一個值必然有一邊不對 |
+| **重試** | 只對 `retryable` 的錯誤，次數由 `backend.retries` 決定（**預設 0**）。重試一定留 log —— 靜默重試會讓「慢」看起來像「當」 |
+
+`pool_status()` 回 `total` / `alive` / `persistent` / `crashes` / `idle`。
+
+> 💡 「常駐」指的是**佇列與設定**，不是長駐 REPL ——
+> `_execute()` 每則訊息都 spawn 一個新 process。
+> 所以「不帶對話歷史的一次性呼叫」（`fresh=True`）**不會多付冷啟成本**。
+
+### 存取控制
+
+兩層：**靜態**（`bot.yaml` 的 `access` + 環境變數，**疊加**不是取代）
++ **動態**（`state/access.json`，執行期增刪）。
+
+```yaml
+access:
+  admin_chat_ids: [937896656]      # 舊格式，仍支援（載入時正規化）
+  users:                            # 新格式
+    111222333: user
+```
+
+- **不回寫 `bot.yaml`** —— 那會動到人寫的註解與排版
+- 舊格式**載入時正規化**成 `{id: level}`，執行期只有一種形狀
+- 空白名單 = 不限制（開發模式），但 **`is_admin()` 回 `False`** ——
+  「不限制使用」不等於「都是管理員」
+- 只能移除動態加入的 —— 移除靜態項目會讓下次重啟又出現，**那種假成功比拒絕更糟**
+
+> 🔴 **0.6.0 之前這整段設定沒有任何人讀** —— `handlers` 只從環境變數取白名單，
+> 而 `.env` 沒設時它是空集合 → 「空＝不限制」→
+> **設了白名單卻對所有人開放**。註解寫著會讀 `bot.yaml`，實作只有 env 那一半。
+>
+> 這是「宣告了但沒接上」最危險的形狀：**不是功能沒生效，而是安全設定沒生效
+> 而且看起來生效了。**
 
 ### 報告管線 —— MD first
 
@@ -236,10 +304,26 @@ modes:
     max_assignments: 3
     member_reply_cap: 2500  # 單一成員回覆進收斂 prompt 的字數上限
 
+llm:
+  model: gemini-3.5-flash   # 未指定用途時的 fallback（不可移除）
+  models:                   # 依**用途**分工，key 打錯會 warning
+    plan: cheap-model       #   規劃：輸出短 JSON，用便宜快的
+    verify: strong-model    #   驗證：要挑得出問題，用強的
+
+backend:
+  timeout: 120              # 全域逾時（per-agent 可用 AgentDef.timeout 覆蓋）
+  retries: 0                # 只對 retryable 的錯誤重試
+  max_queue: 32
+  idle_timeout: 1800        # 0 = 不回收
+  crash_window: 600
+
 report:
   enabled: true
   md_dir: output/reports
   min_chars: 150            # 短於此直接回文字，不走管線
+
+access:
+  admin_chat_ids: [937896656]
 ```
 
 ### 目錄
@@ -349,6 +433,8 @@ bot.run()
 | 客製 Web UI | 消費端 `templates/` 放同名檔案 |
 | 換訊息來源 | `MessageContext` 不吃 `telegram.Update` —— Web UI / CLI / 測試同一條路由 |
 | 換送檔方式 | `DocumentSender` Protocol |
+| 多模型分工 | `llm.models` 依用途指定（`plan` / `verify` / `chat` / `synthesis`） |
+| 權限模型 | `AccessControl` 兩層（靜態設定 + 執行期增刪） |
 
 ---
 
