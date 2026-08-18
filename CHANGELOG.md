@@ -4,12 +4,119 @@
 > 不是推估值。M0–M6 的套件化是 **2026-08-17 一天內**走完的，
 > 所以 0.2.0 ~ 0.4.0 全部同日。
 >
-> ⚠️ **有 GitHub Release 的是 `v0.2.0` / `v0.4.1` / `v0.4.3`**（tag 三個）。
-> **`0.3.0` / `0.3.1` / `0.4.0` / `0.4.2` / `0.5.0` / `0.5.1` 只有本機 wheel**，沒有發布 ——
+> ⚠️ **有 GitHub Release 的是 `v0.2.0` / `v0.4.1` / `v0.4.3` / `v0.6.0`**（tag 四個）。
+> **`0.3.0` / `0.3.1` / `0.4.0` / `0.4.2` / `0.5.0` / `0.5.1` / `0.5.2` 只有本機 wheel**，沒有發布 ——
 > 讀這份的人會預設每一條都拿得到 asset，所以要講明。
-> `v0.4.3` 的 release notes **同時涵蓋 0.4.2**（0.4.2 未單獨發版）。
+> `v0.4.3` 的 notes 涵蓋 0.4.2；**`v0.6.0` 的 notes 涵蓋 0.5.0–0.6.0**。
 >
 > nana-bot 實裝 **0.4.3**（sha256 與 release asset 逐位元組核對一致）。
+
+## [0.6.0] — 2026-08-18
+
+**AccessControl + verify hook + UI helpers**（M4）。🟠 設定格式擴充（向後相容）。
+
+### Fixed
+
+- 🔴 **`bot.yaml` 的 `access` 段從來沒有任何人讀** ——
+  `handlers._ALLOWED_USERS` **只從環境變數 `ADMIN_CHAT_IDS` 取**，
+  而 `.env` 沒設時它是空集合 → 「空＝不限制」→
+  **設了白名單卻對所有人開放**。
+
+  實測（0.5.2）：
+
+  ```
+  access.admin_chat_ids     = [937896656]
+  handlers._ALLOWED_USERS   = set()
+  _is_authorized(123456789) → True        ← 陌生人通過
+  ```
+
+  註解寫著「bot.yaml 的 `access.admin_chat_ids`；env 可覆寫」，
+  **但實作只有 env 那一半**。
+
+  > 這是「宣告了但沒接上」**最危險的形狀** ——
+  > 不是功能沒生效，而是**安全設定沒生效而且看起來生效了**。
+  > 與 `modes.chat.tools`（0.4.3）同型但後果更嚴重。
+
+  ⚠️ **升級注意**：0.6.0 之後 `access` 段會**真的生效**。
+  請先確認裡面的內容是你要的，否則升級後你可能把自己鎖在外面。
+
+- 移除 `handlers._SOUL_DIR` —— **純死碼**（只有定義沒有引用），且寫死 admin-agent
+- `session._DB_PATH` → `_db_path()` 延遲計算。模組層路徑常數在 import 時凍結，
+  **誰先 import 就綁誰的家** —— 症狀是測試「單獨跑會過、完整跑會壞」
+
+### Added
+
+- **`access.py`** —— `AccessControl`（權限等級 + 執行期增刪 + 持久化）
+  - 靜態（`bot.yaml` + env，**疊加**不是取代）+ 動態（`state/access.json`）
+  - 舊格式 `admin_chat_ids: [int]` **載入時正規化**成 `{id: level}`，
+    執行期只有一種形狀（兩種並存＝每個讀取點判斷兩次）
+  - **不回寫 `bot.yaml`** —— 那會動到人寫的註解與排版
+  - 空白名單維持「不限制」，但 **`is_admin()` 回 `False`** ——
+    「不限制使用」不等於「都是管理員」
+  - **只能移除動態加入的** —— 移除靜態項目會讓下次重啟又出現，
+    **那種假成功比拒絕更糟**
+  - 壞掉的 state 檔不讓 Bot 起不來，**但一定 log**（靜默忽略等於白名單被悄悄清空）
+- `access.users`（新格式）· `modes.team.verify`
+- **team_flow 選配 verify** —— 收斂後的可選後處理，**預設關**。
+  有意見**附在後面不改寫答覆本身**（驗證者不是作者）；
+  verify 失敗**不影響已完成的協作**；模型由 `llm.models.verify` 決定，**不寫死廠商**
+- `bot/keyboard.py` · `bot/pagination.py`（自 ninja-bot 搬入，純 UI）
+
+### 明確不取
+
+**`tool_tracker.py`** —— 它靠 `feed(text)` 從**輸出流**解析進度，
+而套件 `_execute()` 用 `communicate()` 等完整輸出 —— **沒有 stream 就沒得 feed**。
+要它得先做 backend 的 stream 讀取，那是另一個範圍。
+套件的 `ProgressStack` 是呼叫端驅動，兩者不是同一種東西 —— **但不並存**。
+
+ark_bot_agent **283 passed**。
+
+---
+
+## [0.5.2] — 2026-08-18
+
+**規劃不帶歷史 + 多模型分工**（M3）。純增益。
+
+### ⚠️ 原計畫的前提不成立，量測後改了做法
+
+計畫抄的是 ninja-bot 的「21k → 686 tokens（-97%）」，但那來自
+Claude CLI 帶完整工具 schema 的規劃呼叫。本套件實測：
+
+```
+plan prompt        654 字元
+describe_agents    203 字元   ← 原本要精簡這個
+leader steering   3901 字元   ← 真正的量都在這
+```
+
+精簡成員描述最多省 ~100 字元，在 4555 字元總 context 裡是噪音。
+**照計畫字面做會改錯地方，而且看起來有做事。**
+
+真正的成本源：`leader` 是 `skip_resume: false` → 每次規劃都跑
+`kiro-cli chat --resume`，**重播整段累積歷史**。
+
+### Added
+
+- **`agent_cli_chat(fresh=True)`** —— 不帶對話歷史的一次性呼叫。
+  規劃階段的 prompt 是自足的（任務 + 成員清單），歷史純粹是成本。
+
+  💡 **不會多付冷啟成本** —— `AgentProcess._execute()` 本來就是每則訊息
+  spawn 一個新 process，所謂「常駐」是**佇列與設定**，不是長駐 REPL。
+- **`llm/model_router.py`** —— `model_for(purpose)`。
+  `llm.models` 以**用途**為 key（`chat` / `plan` / `verify` / `synthesis`），
+  未指定 fallback 到 `llm.model`（**不可移除**，既有部署還在用）
+
+  > key 用「用途」而非 ninja 的「節點名」：節點名與工作流拓樸綁死，
+  > 而且無法判斷未知 key 是打錯還是新節點 —— 用途名可以 warning。
+
+  **打錯的 key 會明講** —— `verfiy: strong` 靜默 fallback 會讓那個設定
+  永遠不生效而行為看起來正常（與 `modes.chat.tools` 同型：設定說謊）。
+
+含 `test_plan_prompt_stays_lean()` 釘住規模上限（現在 654，上限 1500）——
+它現在是精簡的，別讓人往裡面塞東西。
+
+全庫 1470 → **1479 passed**。
+
+---
 
 ## [0.5.1] — 2026-08-18
 
