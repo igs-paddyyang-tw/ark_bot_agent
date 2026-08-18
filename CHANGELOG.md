@@ -5,9 +5,64 @@
 > 所以 0.2.0 ~ 0.4.0 全部同日。
 >
 > ⚠️ **只有 `v0.2.0` 與 `v0.4.1` 有 GitHub Release**（tag 兩個）。
-> **`0.3.0` / `0.3.1` / `0.4.0` 只有本機 wheel**，沒有發布 —— 讀這份的人
+> **`0.3.0` / `0.3.1` / `0.4.0` / `0.4.2` 只有本機 wheel**，沒有發布 —— 讀這份的人
 > 會預設每一條都拿得到 asset，所以要講明。
-> nana-bot 目前實裝的是本機 **0.3.1** wheel。
+> nana-bot 目前實裝的是本機 **0.4.2** wheel。
+
+## [0.4.2] — 2026-08-18
+
+**M5.6 實測產出。** 31 條結構驗證 + 三條真實路由，挖出四個「宣告了但沒接上」
+與一個線上故障。四個都不拋例外、不寫 log。
+
+### Fixed
+
+- 🔴 **M4 報告管線在 TG 上從來沒執行過** —— `deliver_report()` 只被
+  `ModeRouter._maybe_report()` 呼叫，而 **`ModeRouter.route()` 沒有任何呼叫點**
+  （TG 走 `handlers.py` 自己那套 Path 1/2/3）。整個 M4 里程碑的產出在正式路徑上
+  等於不存在。修法是 handlers 兩條收尾各呼叫 `_attach_report()`，
+  而它**借用 router 的 `_maybe_report`** —— 不自己重寫判斷，否則門檻、
+  標題規則、降級訊息會變成兩份各自漂移。
+- 🔴 **清洗與報告的順序反了** —— 過濾只掛在 TG 層、報告管線在 router 裡 →
+  MD/HTML 會存進工具雜訊（`I will run the following command: … (using tool: shell)`），
+  **而畫面上看起來乾淨**，因為 TG 那層之後又清了一次。
+  新增 `clean_cli_output()`，在 `run_agent` / `run_team` 建 `Reply` 時就清；
+  報告也移到 3000 字截斷之前（截斷是 TG 訊息限制，不該切掉存檔內容）。
+- 🔴 **BM25 索引路徑的第三個實例** —— `server/main.py` 的 index-status
+  自己組路徑（少一層 `shared`）→ rebuild 明明成功、status 永遠回 `not_built`。
+  `indexer` 與 `layer1_bm25` 一致（M2.1 的修正還在），只有端點沒走常數。
+  **「模組不自己組路徑」要貫徹到端點層。**
+- 🟠 `modes.chat.max_iterations` 三處硬編 `5` —— 剛好與設定同值，
+  所以「沒接上」看不出來。
+- ⚠️ **`google-genai` 下限提到 `>=2.0`** —— 這是線上故障：
+  💬 快答模式只要命中任何工具就回 `400 INVALID_ARGUMENT —
+  Function call is missing a thought_signature`。
+  程式碼三層 plumbing 都寫好了，但 SDK **1.2.0 的 `Part` 沒有這個屬性**
+  → `getattr` 永遠回 None → 送不回去。**升級解決不了，要釘下限** ——
+  否則重建環境會再故障一次，而症狀看起來像 API 或金鑰問題。
+
+### Added
+
+- `bot.router.clean_cli_output()` —— kiro-cli 輸出清洗，可在 router 層使用
+- `bot.handlers._attach_report()` —— TG 側的報告接點 + `DocumentSender` 注入
+- `tests/ark_bot_agent/test_report_wiring.py`（4 條）——
+  驗**可達性與副作用**，不驗函式存在
+
+### 這批缺陷的共同形狀
+
+`import` 掃得到、單元測試會過、模組載入得了，**就是沒有人呼叫**。
+掃字面值與檢查符號存在都擋不住，只有行為測試釘得住。
+
+### 驗證（nana-bot 實測）
+
+```
+BM25 index-status → {"status":"ok", page_count: 54, has_bm25: true}   ← 先前 not_built
+快答工具往返      → search_wiki ×2 + web_search，無 400
+Tier 0–3 全綠、ERROR 0
+```
+
+全庫 1379 passed / 6 skipped。
+
+---
 
 ## [0.4.1] — 2026-08-18
 
