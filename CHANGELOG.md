@@ -5,9 +5,61 @@
 > 所以 0.2.0 ~ 0.4.0 全部同日。
 >
 > ⚠️ **只有 `v0.2.0` 與 `v0.4.1` 有 GitHub Release**（tag 兩個）。
-> **`0.3.0` / `0.3.1` / `0.4.0` / `0.4.2` 只有本機 wheel**，沒有發布 —— 讀這份的人
+> **`0.3.0` / `0.3.1` / `0.4.0` / `0.4.2` / `0.4.3` 只有本機 wheel**，沒有發布 —— 讀這份的人
 > 會預設每一條都拿得到 asset，所以要講明。
-> nana-bot 目前實裝的是本機 **0.4.2** wheel。
+> nana-bot 目前實裝的是本機 **0.4.3** wheel。
+
+## [0.4.3] — 2026-08-18
+
+**`modes.chat.tools` 從裝飾變成真的白名單。** M5.6 遺留的最後一條。
+
+### Fixed
+
+- 🔴 **`modes.chat.tools` 沒有任何人讀** —— `agent_loop` 拿 `reg.all_schemas()`，
+  七個工具全開；而設定只列四個，其中 `wiki_search` 這個名字**在系統裡不存在**
+  （實際叫 `search_wiki`）。
+
+  比「設定沒生效」嚴重的是，多出來的三個**有寫入副作用**：
+
+  | 工具 | 副作用 |
+  |---|---|
+  | `save_to_wiki` | `filepath.write_text()` 直接寫共用知識庫 |
+  | `save_memory` | 寫記憶 |
+  | `execute_skill` | 執行 skill（含 `execute_code`） |
+
+  讀設定的人會以為快答模式只能查不能寫。**它給人錯誤的安全感** ——
+  這比沒有這個設定更糟。
+
+### Changed
+
+- `agent_loop(allowed_tools=...)` —— `None` = 全部（agent 模式的 Gemini fallback
+  靠這個，職人本來就該能用寫入工具）；💬 快答的三個呼叫點
+  （`router.run_chat` / handlers Path 3 / `/api/v1/chat`）傳 `modes.chat.tools`。
+- **預設白名單只留唯讀 + 派工**：`search_wiki` / `recall_memory` /
+  `web_search` / `dispatch_to_agent`。三個寫入工具改成 **opt-in** ——
+  專案的知識庫規則是「wiki 只由 ingest 產出、禁止手寫」，
+  讓對話模型自己寫進去與那條規則衝突，所以預設關不是預設開。
+- `_pick_schemas()` 三種可見性：未知名稱 **warning 並列出可用名稱**、
+  排除了哪些用 info 講、全部被過濾掉時 **ERROR 並退回全部**
+  （安靜地變成無工具模式比報錯更糟）。
+
+### ⚠️ 白名單是範圍控制，不是安全邊界
+
+實測：叫娜娜寫知識庫 → 她**改用 `dispatch_to_agent` 請管家寫，
+而管家走 kiro-cli 有全部權限，寫入成功**（頁數 54→55）。
+
+要真的擋住寫入，得限制**被派工那一端**，不是娜娜的工具表。
+這裡不假裝已經安全 —— 白名單解決的是「設定說謊」，不是「模型不能寫」。
+
+### Added
+
+- 8 個測試：過濾生效、`None`=全部、未知名稱 warning、排除有 log、
+  全排除退回全部、空 registry 回 `None`、三個寫入工具不在預設、
+  **預設白名單的每個名字都必須真的註冊得到**（原 bug 的直接守門）。
+
+全庫 1425 passed / 6 skipped。
+
+---
 
 ## [0.4.2] — 2026-08-18
 
