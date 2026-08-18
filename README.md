@@ -46,10 +46,10 @@
 ## 安裝
 
 ```bash
-pip install https://github.com/igs-paddyyang-tw/ark_bot_agent/releases/download/v0.2.0/ark_bot_agent-0.2.0-py3-none-any.whl
+pip install https://github.com/igs-paddyyang-tw/ark_bot_agent/releases/download/v0.4.1/ark_bot_agent-0.4.1-py3-none-any.whl
 
 # 含 Wiki 搜尋優化與內建 skill 依賴
-pip install "ark-bot-agent[all] @ https://github.com/.../ark_bot_agent-0.2.0-py3-none-any.whl"
+pip install "ark-bot-agent[all] @ https://github.com/igs-paddyyang-tw/ark_bot_agent/releases/download/v0.4.1/ark_bot_agent-0.4.1-py3-none-any.whl"
 ```
 
 ## 用法
@@ -73,12 +73,10 @@ knowledge/      # 知識庫
 
 ## 狀態
 
-**v0.2.0** —— M0–M4 完成（路徑層／設定層／三模式路由／報告管線），**已發 wheel**。
+**v0.4.1** —— 輸出過濾三層管線重構 + 移除 /recall 指令。三模式路由、報告管線穩定運行。
 
 `run_bot()` / `create_bot()` 仍是 stub —— M5（消費端化）才接上啟動流程。
 現在已可用：`get_config()` · `ModeRouter` · `deliver_report()` · `paths.*`。
-
-計畫見 kiro-cli 的 `docs/plans/ark-bot-agent-packaging-plan.md`。
 
 ## 版權
 
