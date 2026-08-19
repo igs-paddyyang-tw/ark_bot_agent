@@ -140,7 +140,8 @@ ReAct 迴圈在 **Python 層**，不需要 function calling、不需要自建 MC
 
 ## 子系統
 
-121 個 `.py`、11 個子套件。
+121 個 `.py`、11 個子套件（以 **v0.7.0 wheel** 為準 ——
+工作區可能含未發版的變更，數檔案要看產物不看磁碟）。
 
 | 子套件 | 檔數 | 做什麼 |
 |--------|:----:|--------|
@@ -152,7 +153,7 @@ ReAct 迴圈在 **Python 層**，不需要 function calling、不需要自建 MC
 | `wiki/` | 8 | 四層搜尋、indexer、engine、lint |
 | `agent/` | 6 | kiro-cli 進程管理、常駐佇列、session |
 | `report/` | 4 | MD-first 報告管線（writer / renderer / sender） |
-| `access.py` | 1 | 權限等級 + 執行期增刪 + 持久化（跨層，故放根層） |
+| `access.py` | 1 | 權限等級 + 群組策略 + 執行期增刪 + 持久化（跨層，故放根層） |
 | `tools/` | 4 | 維運工具 |
 | `conversation/` | 2 | 對話狀態 |
 | `server/` | 2 | FastAPI + 6 個 Web UI 頁面 |
@@ -207,7 +208,28 @@ access:
   admin_chat_ids: [937896656]      # 舊格式，仍支援（載入時正規化）
   users:                            # 新格式
     111222333: user
+  group_policy: mention_only        # mention_only（預設）| all | off
 ```
+
+#### 群組策略（0.7.0）
+
+| 值 | 行為 |
+|---|---|
+| **`mention_only`**（預設） | 只回被 @ 的；其餘**仍寫記憶**（群組是資訊來源，不回話是禮貌，不聽是浪費） |
+| `all` | 每則都回（0.6.0 的行為） |
+| `off` | 群組完全不參與 |
+
+**私訊一律回，不受此設定影響。**
+
+> 🔴 **0.7.0 之前 `handlers` 零處 `chat.type` 判斷** —— 所有訊息走同一條路。
+> 私訊時是對的，**群組時 bot 會回應每一則訊息**，變成噪音來源。
+>
+> 預設改成 `mention_only` 是刻意的：**相容性保護的是「有人刻意依賴的行為」，
+> 不是「碰巧存在的缺陷」**。一個把每則訊息都回應的 bot 沒有人會刻意想要。
+> 要舊行為設 `group_policy: all` —— 那也是回滾出口，不必降版。
+
+降級：取不到 bot username 時退化為「只看 `@` 開頭」（涵蓋 `@碼哥 …` 這種
+代號直送）並 log 一次 —— **寧可多回一點，也不要在群組裡完全啞掉**。
 
 - **不回寫 `bot.yaml`** —— 那會動到人寫的註解與排版
 - 舊格式**載入時正規化**成 `{id: level}`，執行期只有一種形狀
@@ -398,6 +420,22 @@ get_home()   # ARK_BOT_HOME → 往上找 agents.yaml → cwd
 python -m ark_bot_agent paths
 ```
 
+### 執行期狀態目錄可覆寫（0.7.0）
+
+```
+ARK_BOT_STATE_DIR（env，部署期用）
+  → backend.state_dir（設定，版控用）
+  → get_home()/state（預設，與 0.6.0 同值）
+```
+
+用途：從舊 layout（例如 `data/sessions.db`）遷移時不必做 symlink。
+**但套件不搬檔，既有資料要自己搬。**
+
+- **相對路徑相對 `get_home()`，不是 cwd** —— 相對 cwd 是本套件修掉最多次的
+  bug 類型（平移時 37 處），症狀是「從別的目錄啟動就讀不到，而且不報錯」
+- 指定路徑建不起來時 **error log + 沿用預設**，不讓 Bot 起不來 ——
+  但一定要講，否則部署者不知道資料實際去了哪裡
+
 兩個刻意的設計選擇：
 
 - `get_steering()` **不自動建目錄** —— 缺人格檔要讓呼叫端知道，
@@ -449,7 +487,43 @@ bot.run()
 主要 API：`/api/v1/chat` · `/api/v1/skills` · `/api/v1/wiki/{query,pages,lint,rebuild-index,index-status}`
 · `/api/v1/memory/{recall,daily,consolidate}` · `/api/chat/traces`
 
+### 觀測（0.7.0）
+
+```
+GET /api/chat/stats?days=7
+→ {total, success, failed, pending, success_rate, by_route, by_agent, by_decision}
+```
+
+純 SQL 聚合既有的 `chat_trace` 資料，**不另開儲存** ——
+資料早就在收，缺的是出口不是資料，加第二套會讓兩份數字對不上。
+
+兩個判斷寫進實作：
+
+- **`pending` 不進成功率分母** —— 剛送出還沒有結論的訊息不該拉低成功率
+- 空字串與 `NULL` 都歸「（未標記）」—— 分成兩類會讓人以為是兩件事
+
+無資料時回**零值不拋例外**（空資料是正常狀態不是錯誤）。
+
 ---
+
+## 量測工具（0.7.0）
+
+```python
+from ark_bot_agent.llm.prompt_budget import prompt_budget, format_budget
+print(format_budget(await prompt_budget("你好")))
+```
+
+回傳 💬 快答模式**每則訊息實際送出**的 context 組成（各區塊字元數 + 工具 schema）。
+
+實測基準（v0.7.0）：**10,774 字元 ≈ 2,693 tokens**，
+而最大的一塊是 `tone_rules`（**3,333 字元 = 34%**）—— 一段硬編字串。
+硬編字串合計 53%，資料類只 47%。
+
+> 💡 **這是交付物不是優化的前置作業。** 沒有可重複的量測，
+> 下次改動無從比較，而「憑感覺精簡」會改錯地方（實際踩過）。
+>
+> 它自己也要能被檢查 —— 有「各段加總 == 總數」的帳目核對，
+> 因為初版憑印象寫區塊標記，把某一段的字元數歸到了隔壁。
 
 ## 設計原則（都是踩出來的）
 
@@ -467,7 +541,10 @@ bot.run()
    **但降級必須講出來**（`ReportResult.user_note()`）。
 5. **清單類邏輯只能有一個來源** —— agent 查詢一律走 `config.py`，
    註冊表是全域事實（`get_registry()`），不該一個呼叫點一份。
-6. **驗可達性不驗符號存在** —— 有一整個里程碑的功能寫好了、測試全綠、
+6. **相容性保護「刻意依賴的行為」，不是「碰巧存在的缺陷」** ——
+   群組全回不是有人想要的功能，是沒判斷 `chat.type` 的後果。
+   改它要給回滾出口（`group_policy: all`），但不該為了它保留缺陷。
+7. **驗可達性不驗符號存在** —— 有一整個里程碑的功能寫好了、測試全綠、
    模組載入得了，**就是沒有人呼叫**。這種只有行為測試釘得住。
 
 ---
