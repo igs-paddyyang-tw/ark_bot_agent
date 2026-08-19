@@ -4,12 +4,96 @@
 > 不是推估值。M0–M6 的套件化是 **2026-08-17 一天內**走完的，
 > 所以 0.2.0 ~ 0.4.0 全部同日。
 >
-> ⚠️ **有 GitHub Release 的是 `v0.2.0` / `v0.4.1` / `v0.4.3` / `v0.6.0` / `v0.7.0`**（tag 五個）。
+> ⚠️ **有 GitHub Release 的是 `v0.2.0` / `v0.4.1` / `v0.4.3` / `v0.6.0` / `v0.7.0` / `v0.7.1`**（tag 六個）。
+> **`0.7.2` 刻意不發** —— 工作區含另一位維護者標記 `[0.8.0]` 的功能，留給對方隨 0.8.0 出。
 > **`0.3.0` / `0.3.1` / `0.4.0` / `0.4.2` / `0.5.0` / `0.5.1` / `0.5.2` 只有本機 wheel**，沒有發布 ——
 > 讀這份的人會預設每一條都拿得到 asset，所以要講明。
 > `v0.4.3` 的 notes 涵蓋 0.4.2；**`v0.6.0` 的 notes 涵蓋 0.5.0–0.6.0**。
 >
 > nana-bot 實裝 **0.4.3**（sha256 與 release asset 逐位元組核對一致）。
+
+## [0.7.2] — **未發布**（工作區狀態）
+
+> ⚠️ **這一版沒有 GitHub Release。** 工作區同時含另一位維護者標記為
+> `[0.8.0]` 的 `team_backend` 整合（預設關、目前零測試涵蓋），
+> **發成 0.7.2 會把 0.8.0 的功能塞進 patch 版號**，所以留給對方隨 0.8.0 一起出。
+>
+> 下列修正**已在 main**，會隨下一個發布版本出去。
+
+### Fixed
+
+- 🔴 **「少一層 `shared`」的第四個實例，而且是功能性缺陷** ——
+  `skills/internal/wiki_distill` 把蒸餾產出寫進 `knowledge/wiki`（1 篇），
+  而引擎的索引與搜尋讀 `knowledge/shared/wiki`（21 篇）
+  → **蒸餾出來的知識永遠不會被索引，也搜不到**。
+
+  四次全記錄（都是少一層、都不拋例外不寫 log）：
+
+  | 次 | 位置 | 症狀 |
+  |:-:|---|---|
+  | 1 | `layer1_bm25` 讀 `knowledge/.index` | BM25 索引永遠讀不到，靜默 fallback |
+  | 2 | `indexer` 與 `layer1` 讀寫不一致 | 同上 |
+  | 3 | `server/main.py` 的 index-status 手組 | rebuild 回 `ok` 但 status 永遠 `not_built` |
+  | 4 | **`wiki_distill` 寫 `knowledge/wiki`** | **蒸餾產出不進索引、搜不到** |
+
+- 🔴 **常數只是半個 bug** —— `_DISTILL_PROMPT` **自己也告訴模型錯的路徑**
+  （「存放到 `knowledge/wiki/`」）。只改常數沒有用，模型照 prompt 走。
+  docstring / description / prompt 內的 `index.md` 與 `log.md` 共五處都改了。
+
+  > **「同一事實寫兩處」的變體：其中一處是給模型看的自然語言，掃程式碼掃不到。**
+  > 已加測試比對「prompt 內的路徑」與「常數」。
+
+- `memory/indexer.DB_PATH` 與 `skills/internal/chat_history.DB_PATH`
+  改 `_db_path()` 延遲計算 —— DB 是**寫入目標**，凍結錯的家等於資料寫到別處
+  （與 `session` / `chat_trace` 同一處置）。
+- 移除 `wiki_distill._RAW_DIR` / `_LOG_PATH` / `_INDEX_PATH` ——
+  **死碼且路徑也錯**，留著只會被人照抄。
+
+### Added
+
+- **`paths.py` 五個正規存取器** —— `get_shared_dir()` /
+  `get_shared_wiki_dir()` / `get_shared_raw_dir()` / `get_index_dir()` /
+  `get_shared_tasks_dir()`。手組的 **13 處**全部收斂。
+
+  > 💡 **修第 N 次都只是修那一次。** 四次同型 bug 的共同來源是
+  > 「每個人自己組路徑」—— **加單一出口才是修這一類**。
+
+- **`test_path_constants_sweep.py`** —— 守門改用 `ast` **自動掃描**，
+  不再靠手寫清單（手寫清單不會涵蓋新增的常數）。驗六件事：
+  都在 `get_home()` 底下／不准手組 `shared`／wiki 概念的常數互相一致／
+  索引讀寫一致／prompt 與常數一致／死碼不復活。
+
+  > **掃描一跑就抓到另外 7 處人工盤點漏掉的** —— 它們在**函式內**
+  > 而不是模組常數，其中 `server/main.py` 有 4 處同樣的 `shared/wiki`。
+  >
+  > 💡 **人工盤點會漏，而且漏的地方沒有規律。**
+  > 同型錯誤出現三次以上就該寫掃描，不要再盤一次。
+
+### 順帶修掉的版號分岔
+
+`pyproject` 已是 `0.7.2` 而 `__init__.py` 停在 `0.7.0`
+—— **正是 0.4.1 加測試防的那個分岔**（該版 wheel 內部版號寫著 0.7.0）。已對齊。
+
+> 🔴 **共用套件開發源時，動版號前先看 `pyproject` 與 `git log`。**
+> 「已安裝版本 ≠ pyproject 版本」本身就是警訊。
+
+ark_bot_agent **349 passed**。
+
+---
+
+## [0.7.1] — 2026-08-18
+
+> 由另一位維護者發布（本檔先前缺此條目，事後依 commit 與程式碼補上）。
+
+### Added
+
+- **TG 檔案白名單** —— `report/sender.py` 的 `ALLOWED_FILE_TYPES = {".html", ".md"}`。
+  資安限制：不在白名單的副檔名**拒絕傳送並 log**，不靜默略過。
+  可用 `allowed_types` 參數覆寫。
+- 長訊息分段 —— `bot/progress.py` 的 `_split_html_safe()`（TG 4096 字元限制）。
+  **不在渲染層截斷**，由 `ProgressStack` 分段送出。
+
+---
 
 ## [0.7.0] — 2026-08-18
 
