@@ -266,10 +266,10 @@ MD（給 AI 讀、可 diff、進版控）→ HTML（給人看、自帶 CSS）→
 
 ```bash
 # 最小
-pip install ark_bot_agent-0.11.5-py3-none-any.whl
+pip install ark_bot_agent-1.0.1-py3-none-any.whl
 
 # 含 Wiki 搜尋優化 + 內建 skill 與報告管線的依賴（建議）
-pip install "ark-bot-agent[all] @ file:///path/to/ark_bot_agent-0.11.5-py3-none-any.whl"
+pip install "ark-bot-agent[all] @ file:///path/to/ark_bot_agent-1.0.1-py3-none-any.whl"
 ```
 
 | extra | 內容 |
