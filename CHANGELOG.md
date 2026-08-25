@@ -1,10 +1,187 @@
 # Changelog
 
 > **發版狀態不是每版都有。** 有 GitHub Release 的是
-> `v0.2.0` · `v0.4.1` · `v0.4.3` · `v0.6.0` · `v0.7.0` · `v0.7.1`（依 Release API 核對）。
+> `v0.2.0` · `v0.4.1` · `v0.4.3` · `v0.6.0` · `v0.7.0` · `v0.7.1` · `v0.8.0`
+> · `v0.11.3` · `v0.11.4` · `v0.11.5`（依 Release API 核對）。
 > 其餘版本只有本機 wheel —— 讀本檔不要預設每一條都拿得到 asset。
 >
 > 0.4.2 – 0.7.2 的條目是 2026-08-19 依 git commit 回填的（當時只寫到 0.4.1）。
+> 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
+> 2026-08-25 已重排修正（完整版在下方各自版號處）。
+
+## [1.0.1] — 2026-08-25 · 記憶落點收乾淨：steering 與 knowledge 也跟著「家」走
+
+1.0.0 只把 **memory** 的落點收進 `paths.get_agent_memory_dir()` 單一出口，
+但 **steering 與 knowledge** 仍有多處自組 `agents/<name>/...` —— manager
+（`dir: "."`）因此**人格讀根層、記憶／知識卻讀 `agents/manager-agent/`**，
+同一個 agent 的家被解析成兩個。這一版把剩下的收乾淨。
+
+### 🔴 症狀：manager 讀不到自己剛寫的記憶
+
+1.0.0 讓 manager 的 daily log **寫**到根層 `memory/`，但 `context_builder`
+組提示時仍去 `agents/manager-agent/memory/` **讀** memory.md / recent.md
+→ 寫在一處、讀在另一處，manager 的持久記憶與最近經驗**永遠讀不到**。
+steering（SOUL.md）與 knowledge（歷史記憶搜尋、save_memory）同型。
+
+### 修法：新增 `get_agent_knowledge_dir()`，10 處全接上出口
+
+`paths.py` 補上 knowledge 的單一出口（與 memory/steering 同一個底座
+`get_agent_home`：家在專案根 → 根層 `knowledge/`）。收斂的呼叫點：
+
+| 類 | 檔案 | 改為 |
+|----|------|------|
+| memory | `bot/handlers.py`（memory.md / recent.md）· `memory/api.py`（daily） | `get_agent_memory_dir()` |
+| steering | `bot/handlers.py`（`_load_soul` + fallback）· `llm/tools/dispatch.py` · `agent/cli.py` | `get_agent_steering_dir()` |
+| knowledge | `wiki/engine.py`（raw/wiki）· `bot/handlers.py`（`_search_memory`）· `agent/memory.py`（`save_memory`） | `get_agent_knowledge_dir()` |
+
+`dispatch.py` 順帶把兩層 SOUL fallback 收成一行（出口內部已處理 id／`-agent` 後綴）。
+
+### 守門：memory / steering / knowledge 三類掃描 + 三家合一
+
+`tests/ark_bot_agent/test_manager_memory_home.py` 擴充：
+- `test_three_homes_are_one` —— 同一個 agent 的 memory／steering／knowledge 必解析到同一個家
+- steering／knowledge 各一條 `ast` 掃描（禁止再自組），比照原本的 memory 掃描
+- 行為層 `test_save_memory_lands_in_root_for_manager` —— 真的寫一次，驗不再生孤兒目錄
+- **432 passed**（無回歸）
+
+### 已知豁免（不在本次範圍）
+
+`server/main.py` 的 wiki 瀏覽 API 收的是**瀏覽樹傳來、已含 `agents/{name}`
+前綴的相對路徑**（Web UI 內部自洽的路徑，非用 agent_id 解析家）——
+要收斂需與 `scan_dir` 一起改，屬 Web UI 子系統重構，測試已標記豁免。
+
+## [1.0.0] — 2026-08-25 · 記憶落點跟著「家」走 · 首個 1.x
+
+### 為什麼是 1.0.0 而不是 0.12.1
+
+單看程式碼這是一個路徑解析的修正，但它補上的是 **0.12.0 那次架構收斂的最後一塊**：
+0.12.0 讓三個模式各自綁定自己的 `.kiro` 來源（chat=admin-agent、agent=根目錄），
+本版讓**記憶落點也照同一條判準**。三模式的「家」從此是一個一致的概念 ——
+steering、工作目錄、記憶三者同源，不再各自解析。
+
+行為有變（見下方遷移），所以不是 patch；架構前提定型，所以離開 0.x。
+
+### 🔴 `dir: "."` 的 agent 記憶被寫到孤兒目錄
+
+`write_daily_log()` 一律組 `agents/<name>/memory/daily/`，於是
+`agents.yaml` 裡 `dir: "."` 的 agent（manager／👑 管家）——
+人格、steering、工作目錄全在專案根 —— **記憶卻另立門戶**，
+生出一個除了 `memory/` 什麼都沒有的 `agents/<id>-agent/`。
+
+語意矛盾：manager 是「根目錄的化身」，只有記憶不在根目錄。
+而它**不拋例外、不寫 log**，與本套件記載過的「少一層 `shared`」同型 ——
+**每個模組自己組路徑，就一定會有人組錯**。
+
+實測本部署：`agents/paddy-agent/` 底下只有 `memory/daily/` 三個檔，
+同一天的對話因此散在兩個檔案裡（根層一份、孤兒目錄一份）。
+
+### 修法：`paths.get_agent_memory_dir()` 單一出口
+
+判準是**「這個 agent 的家在哪」，不是「它叫什麼」**：
+
+| agent | `dir` | 記憶落點 |
+|---|---|---|
+| `_default` | — | `memory/` |
+| manager（👑 管家）| `.` | `memory/`　← 本版改變 |
+| admin / leader / worker | `agents/<name>-agent` | `agents/<name>-agent/memory/`（不變）|
+
+**沒有寫死 `role == "manager"`** —— 真正的不變量是「工作目錄 == 專案根」。
+綁 role 的話，改天有人把 role 改成別的、`dir` 還是 `.`，就會靜默退回舊行為。
+
+收斂的呼叫點五處（原本各組各的）：`memory/daily_log`、`memory/indexer`、
+`llm/context_builder`、`llm/tools/memory_tools`、`bot/handlers`（recent.md 與昨日 log）。
+
+### 遷移：`scripts/migrate_manager_memory.py`
+
+既有檔案不會自己搬。預設 dry-run，`--apply` 才動檔案：
+
+- 同名檔**按 `## HH:MM` 條目合併後排序**，不覆寫、不丟內容
+- 只有真的搬空才移除孤兒目錄；非空一律保留並回報
+- 本部署實測：搬移 2、合併 1，條目數 5+5 → 10（零損失）
+
+### 同批對齊：規格文件 ↔ 程式碼（三處矛盾）
+
+拿 `docs/reports/2026-08-25-nana-bot-three-mode-architecture.md` 逐條核對開發源，
+挖出三處「文件的設計主張，程式碼沒做到」：
+
+**① 「記憶落點跟著家走」原本只實作了一半。**
+初版只有「家在專案根」那一支照 `dir` 解析，其餘仍拿名字拼：
+
+```
+設定的家 (dir)     : agents/foo-workspace
+記憶落點 (resolver): agents/bar/memory        ← 與家不一致
+```
+
+改成 `get_agent_home()` 當底座，記憶（`get_agent_memory_dir`）與人格
+（`get_agent_steering_dir`）都從它長出來 —— **人格與記憶不該解析到兩個家**。
+
+> 💡 兩個部署的 `dir` 剛好都是 `agents/{id}-agent` 所以沒踩到。
+> **那是巧合不是保證，而巧合不會出現在測試結果裡。**
+> 順帶暴露一個既有隱患：`skill_manage.py` 傳的 `proposal["agent"]`
+> 可能是 bare id，舊寫法會寫進 `agents/<bare-id>/`（設定裡不存在的目錄）。
+
+**② 「`source_agent` 是部署配置、非源碼硬編」原本不成立 —— 有四份實作。**
+
+| 模組 | 函式名 | fallback |
+|---|---|---|
+| `bot/handlers.py` | `_chat_source_agent` | `"admin-agent"` |
+| `llm/context_builder.py` | `_chat_source_agent` | `""` |
+| `llm/tools/memory_tools.py` | `_chat_memory_agent` | `"admin-agent"` |
+| `llm/tools/wiki_search.py` | `_chat_wiki_agent` | `"admin-agent"` |
+
+三種函式名、**兩種不一致的 fallback** —— 同一個問題在同一次對話裡
+會得到兩種答案。收斂成 `config.chat_source_agent()` 單一出口，
+fallback 統一為**空字串**（語意：不指定某個 agent → 專案根）。
+
+> 🔴 **fallback 硬編別的部署的 agent 名，比沒有 fallback 更糟 —— 它看起來有根據。**
+> 這三處正是 `check_hardcoded_names.py` 長期的紅燈，收斂後轉綠（exit 0）。
+
+**③ `/status` 面板宣稱 chat 會派工。**
+
+```
+• 派工：dispatch_to_agent（7 Agents）      ← 修正前
+```
+
+`dispatch_to_agent` 在 0.12.0 就移出 chat 白名單，而「7」是別的部署的數字
+（nana-bot 10 個、paddy 6 個）。改成從設定推導 Chat 工具清單與可派工數量。
+**狀態面板說謊比沒有狀態面板更糟。**
+
+### 守門（`tests/ark_bot_agent/test_manager_memory_home.py`，17 個）
+
+兩層，且**每條都做過反證**（退回舊寫法確認會紅 → 3 failed / 4 failed 兩批）：
+
+1. **行為層** —— 真的呼叫 `write_daily_log()` 驗檔案落在哪，
+   並驗孤兒目錄沒有長回來。只驗「函式存在」或掃字面值會給假綠燈。
+2. **掃描層** —— `ast` 掃全套件，禁止再出現 `get_agents_dir() / x / "memory"`
+   （出口自己除外）、禁止再硬編 chat fallback、禁止面板寫死 agent 數量。
+   附一條「用故意違規的程式碼證明掃描器會紅」——
+   **掃描器的涵蓋範圍本身要被測試**。
+
+## [0.12.0] — 2026-08-25 · 三模式 .kiro 來源統一
+
+三個對話模式各自綁定不同的 `.kiro` 來源，職責分離。
+
+### 架構
+
+| 模式 | 引擎 | `.kiro` 來源 | 記憶 / 產出 |
+|------|------|-------------|------------|
+| 💬 chat | Gemini ReAct | `agents/admin-agent/`（管家人格） | 只看 admin-agent 自己 |
+| 👑 agent | kiro-cli（cwd=根目錄） | 根目錄 `.kiro/`（= Kiro IDE 預設） | role=manager，常駐 |
+| ⚔️ team | kiro-cli | `agents/leader-agent/` | leader 統籌，常駐 |
+
+### 變更
+
+- **chat 模式取消派工**：拿掉 `dispatch_to_agent`，改為純自答（查知識庫／記憶／web）。
+  要動手做的事 → 提醒使用者切模式或用 `@代號`。派工需求集中到 ⚔️ team。
+- **chat 記憶只看自己**：`recall` 與 `search_wiki` 用 admin-agent 身份
+  （wiki 查詢順序：admin-agent 私有 → 共用）。
+- **`agents.yaml`**：新增 `manager`（dir=`.`, role=manager, persistent）；
+  `admin` 保留給 chat（role=admin）。
+- **`bot.yaml`**：`default_agent: manager`、新增 `chat.source_agent: admin-agent`。
+- **`ChatModeConfig.source_agent`**：chat 讀哪個 agent 的人格/記憶，改為設定檔驅動
+  （部署配置，非源碼硬編）。
+- **`list_descriptions(only=...)`**：prompt 只列白名單內的工具，
+  不再誤導 LLM 以為能呼叫實際被擋掉的工具。
 
 ## [0.11.5] — 2026-08-24 · ✅ Release
 
