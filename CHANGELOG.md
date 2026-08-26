@@ -9,6 +9,99 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## [1.0.3] — 2026-08-26 · `features` 不再有死設定（統一「接上或明講沒接上」）
+
+### 🔴 四個開關定義了但零消費點
+
+`FeaturesConfig` 的 `wiki` / `memory` / `scheduler` / `web_ui` 在套件裡
+**沒有任何讀取點**，而 docstring 寫著「關掉就不載入，省啟動時間」——
+其中沒有一個會真的不載入。
+
+`web_ui: false` 最誤導：paddy-bot 確實沒有 web，但那是因為它的入口是自己寫的
+`start-bot.py`（`create_app()` + `run_polling()`）**繞過了 `Bot.run()`** ——
+**設定與事實相符是巧合，不是機制**。任何人改用 `run_bot()` 就會發現
+`web_ui: false` 擋不住 uvicorn，而 `bot.yaml` 若沒有 `server` 段還會吃套件預設 port。
+
+> 🔴 同型於本套件記過的 `access` 段、`modes.chat.tools`、`mcp_servers`、
+> `team_backend`：**宣告了但沒接上，而讀設定的人會以為它生效了。**
+
+### ① `web_ui` 真的接上
+
+`Bot.run()` 依它分流，並拆出兩個明確的出口：
+
+| `web_ui` | 行為 |
+|---|---|
+| `true`（預設） | `_run_web()` — uvicorn 起 Web UI + API，TG 由 server lifespan 帶起 |
+| `false` | `_run_polling_only()` — **只跑 TG polling，不 listen 任何 port** |
+
+- `web_ui: false` 且無 `TELEGRAM_BOT_TOKEN` → **明確 `RuntimeError`**。
+  「起得來但沒有任何入口」比啟動失敗更難查。
+- `startup_report()` 在關閉時**不印 URL** —— 印了就是騙人（那個 port 上沒東西在聽）。
+  這與本套件記過的「顯示 8000 實際綁 8088」同型：顯示與實際必須同源。
+
+### ② 統一作法：`NOT_WIRED` + 掃描守門
+
+剩下三個（`wiki` / `memory` / `scheduler`）要「關掉就不載入」得先收斂散落的
+進入點，不在本版做。改為**明確宣告**：
+
+- `FeaturesConfig.NOT_WIRED: dict[str, str]` —— 欄位 → 為什麼還沒接
+- 被設成**非預設值**時，`config.load()` 就 `log.warning`
+  （放 `load()` 而非 `Bot.run()`：自訂入口不走 `run()`，但所有入口都走 `load()`）
+- 只在被改動時警告 —— 常駐假警報會讓人習慣性忽略該檢查
+
+**機制上線第一秒就抓到真實案例**：paddy-bot 的 `bot.yaml` 寫著
+`scheduler: false  # 排程由 team.yaml 管`，而那個開關沒有實作。
+
+### 守門
+
+`tests/ark_bot_agent/test_features_wiring.py`（13 個）。核心那條是
+**每個欄位要嘛有消費點、要嘛在 `NOT_WIRED`，沒有第三種狀態** ——
+新增開關時就沒有「忘記接」這個選項；想從 `NOT_WIRED` 移除就必須真的接上。
+
+消費點用 `ast` 找 `*.features.<flag>` 的 Attribute 節點，不用字串比對
+（字串比對會被 docstring 與註解命中，也擋不住「名字出現但沒被呼叫」）。
+
+**反證**：runner 拿掉 `web_ui` 判斷 → **4 紅**；把已接上的 `web_ui` 塞進
+`NOT_WIRED` → **3 紅**；`warn_unwired` 改成無條件警告 → **3 紅**。
+
+## [1.0.2] — 2026-08-26 · 最終回覆不再靜默消失（ProgressStack 送達保底）
+
+### 🔴 修復：Team／Agent 模式回覆蒸發，且不留任何 log
+
+**現象**：TG 送訊息 → log 只有一行 `📨`，之後完全靜默，使用者收不到回覆。
+看起來像「handler 中止」，實際上 **handler 跑完了也產出了回覆** ——
+`chat_trace` 那筆記著 `success=1` 與完整回覆內容，只是**回覆沒送出去**。
+
+**根因**：`ProgressStack._edit()` 有三個無聲出口：
+
+| 出口 | 後果 |
+|---|---|
+| `if not self.message_id: return` | `init` 失敗過 → 之後每次更新都被丟棄 |
+| 非 HTML 的 `except Exception as e:` 是空 handler | edit 失敗完全無聲 |
+| HTML fallback 的 `except: pass` | 同上 |
+
+而 `complete(reply)`（送出**最終回覆**的唯一出口）對 ≤4000 字只走 `_edit()`
+→ 任一出口命中，回覆就蒸發。正式環境踩到的是第二條：`init` 成功所以沒有
+`ProgressStack.init failed` warning，`edit` 400 被吞 → **journal 完全乾淨**。
+
+### 修法
+
+- `_edit()` / 新增的 `_send()` **回傳是否送達**，所有失敗路徑一律 `log.warning`
+- `complete()` 在 edit 失敗時退回 `send_message`；全部失敗才 `log.error`
+- `fail()`（錯誤訊息）套用同一條保底 —— 錯誤訊息掉了使用者一樣不知道發生什麼
+- `_truncate()` 收斂重複的 4000 字截斷邏輯
+
+> 💡 **進度更新掉了無所謂，最終回覆掉了是事故。** 原本兩者共用同一個
+> 「靜默容錯」的 `_edit`，等於用進度訊息的標準對待答案。
+
+### 守門
+
+`tests/ark_bot_agent/test_progress_delivery.py`（8 個）——
+三種失敗情境各驗「回覆仍送達」、驗全失敗時**必須有 ERROR**、
+驗 `_edit`/`_send` 回傳 bool（回 None 會讓保底永遠觸發）、驗長文分段未退化。
+
+**反證**：`complete` 改回只走 `_edit` → 4 紅；`_edit` 失敗改回靜默且謊報成功 → 3 紅。
+
 ## [1.0.1] — 2026-08-25 · 記憶落點收乾淨：steering 與 knowledge 也跟著「家」走
 
 1.0.0 只把 **memory** 的落點收進 `paths.get_agent_memory_dir()` 單一出口，
