@@ -9,6 +9,48 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## [1.0.5] — 2026-08-28 · 逾時後子進程不再變孤兒
+
+### 🔴 有 timeout，但全檔零個 `kill()`
+
+`agent/process.py` 的 `_execute()` 兩處都有 `asyncio.wait_for`，逾時會拋
+`TimeoutError`、回 `None`、對使用者顯示「執行超時」。**看起來處理完了。**
+
+實際上 `wait_for` 只讓 **Python 這端**不再等 —— `create_subprocess_exec`
+起的那隻 kiro-cli **繼續跑下去**：佔 CPU、佔 API 額度、
+而且沒有任何指標會顯示它存在（daemon 只認自己 spawn 的 ManagedProcess）。
+
+> 🔴 這比「沒有 timeout」更難查：使用者看到的是「逾時了」，
+> 而背景那隻還活著。**症狀與根因剛好互相掩蓋。**
+
+對照組：`ark_team_agent/process.py:164` 的 `ManagedProcess.kill()`
+**早就是** terminate → 5s → kill 的正確寫法。缺的只有 bot 端。
+
+### 修法
+
+新增 `agent/reaper.py`：
+
+```python
+await reap(proc, grace=5.0)   # → terminated | killed | already_dead | failed
+```
+
+回傳後保證 `proc.returncode is not None`。四個要點：
+
+- **寬限期 5s 與 team 端一致** —— 兩套不同的寬限期就是行為漂移的起點
+- **任何情況不外拋** —— 這是清理路徑，它自己壞掉不該蓋掉呼叫端
+  正在處理的那個逾時錯誤
+- `ProcessLookupError`（terminate 與自然結束的競態）不是故障
+- `kill()` 也失敗 → 回 `failed`，呼叫端記 `REAP_FAILED`（那是 OS 層問題，要人看）
+
+順帶修一個潛在的 `UnboundLocalError`：`proc` 原本在 `try` 內才綁定，
+spawn 本身失敗時 `except` 區塊取不到它。
+
+### 守門
+
+`tests/test_context_governor_w0.py` —— 回收保證 8 條 + 接線 2 條
+（用 `ast` 驗 TimeoutError handler 真的呼叫 `reap`，不用字串比對）。
+**每條都做過反證**，清單在測試檔尾。
+
 ## [1.0.3] — 2026-08-26 · `features` 不再有死設定（統一「接上或明講沒接上」）
 
 ### 🔴 四個開關定義了但零消費點
