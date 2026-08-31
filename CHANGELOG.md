@@ -3,7 +3,7 @@
 > **發版狀態不是每版都有。** 有 GitHub Release 的是（2026-08-31 依 Release API 重新核對，共 19 個）
 > `v0.2.0` · `v0.4.1` · `v0.4.3` · `v0.6.0` · `v0.7.0` · `v0.7.1` · `v0.8.0`
 > · `v0.9.1` · `v0.10.0` · `v0.11.0` · `v0.11.3` · `v0.11.4` · `v0.11.5`
-> · `v1.0.0` · `v1.0.1` · `v1.0.2` · `v1.0.3` · `v1.0.5` · `v1.0.6` · `v1.0.7` · `v1.0.8`。
+> · `v1.0.0` · `v1.0.1` · `v1.0.2` · `v1.0.3` · `v1.0.5` · `v1.0.6` · `v1.0.7` · `v1.0.8` · `v1.0.9`。
 >
 > ⚠️ 這份清單先前只列到 `v0.11.5`，漏了 9 個（含全部 1.x）——
 > 下方個別條目標的「未發布」有幾條也因此不準，**以本行的 API 核對結果為準**。
@@ -13,6 +13,56 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## [1.0.9] — 2026-08-31 · 1.0.8 只修對一半：引擎欄繞過了 env 覆寫那一層
+
+### 🔴 實機一測就露餡
+
+1.0.8 把模式表的引擎欄改成動態，讀的是 `get_config().llm.provider`。
+但 **env 覆寫是在 `get_default_provider()` 裡做的**，不在 config 層：
+
+```
+CLI_BACKEND=claude   → 表格變 claude CLI            ✅
+LLM_PROVIDER=openai  → 表格仍是 gemini／2.5-flash   ❌ 實際跑 openai
+```
+
+CLI 那側對，是因為 `get_available_backend()` 自己處理了 env。
+
+> 🔴 **守門沒抓到，因為 parametrize 直接 monkeypatch 了 `get_config`** ——
+> 剛好跳過出問題的那一層。**測試蓋掉的東西，就是它驗不到的東西。**
+> 只有用真的 env 跑實機才看得見。
+
+### 修法：`provider.resolve_llm_spec()` 單一出口
+
+不手寫第二份解析順序（那正是 1.0.8 的 CHANGELOG 才寫過「必然漂移」的東西）：
+
+```python
+resolve_llm_spec() -> (provider, model, temperature)
+    env LLM_PROVIDER / LLM_MODEL → bot.yaml 的 llm 段
+    provider 特有的 OPENAI_MODEL / ANTHROPIC_MODEL 也在這裡套用
+
+get_default_provider()   ← 改用它（openai/anthropic 分支不再各自取一次 env）
+_engine_labels()         ← 也用它
+```
+
+實機三種覆寫全部正確：`LLM_PROVIDER` / `LLM_MODEL` / `OPENAI_MODEL`。
+
+⚠️ 誠實記錄一個**沒有收斂**的分岔：`llm/gemini_chat.py` 的 `simple_chat()`
+走的是另一套解析（`GEMINI_MODEL` env → `model_for("chat")`）。
+兩者在「`llm.models` 沒設」時一致 —— 目前所有部署都是如此；
+設了 `llm.models.chat` 就會分岔。收斂它會改變行為，不在本版範圍，
+已寫進 `resolve_llm_spec()` 的 docstring。
+
+### 守門：四條新的，全部用**真的 env** 不 patch config
+
+| # | 驗什麼 |
+|---|---|
+| env 覆寫 ×2 | `LLM_PROVIDER+LLM_MODEL` / `LLM_PROVIDER+ANTHROPIC_MODEL` 要反映到表格 |
+| 同源 | 表格顯示的就是 `resolve_llm_spec()` 會拿去建 provider 的那組值 |
+| 掃描層 | `_engine_labels` 必須呼叫 `resolve_llm_spec`，且**不得再出現 `.llm`** |
+
+既有那條 parametrize 也一併改成 env 驅動（原本 patch config，等於跳過這一層）。
+
+**反證**：退回 1.0.8 的寫法 → **6 紅**（1.0.8 的守門在同樣的反證下是 0 紅）。
 ## [1.0.8] — 2026-08-31 · 💬 快答模式的 system prompt 加入引擎／成本自我揭露
 
 ### 背景
