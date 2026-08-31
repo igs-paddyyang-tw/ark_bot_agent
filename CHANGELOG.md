@@ -3,7 +3,7 @@
 > **發版狀態不是每版都有。** 有 GitHub Release 的是（2026-08-31 依 Release API 重新核對，共 19 個）
 > `v0.2.0` · `v0.4.1` · `v0.4.3` · `v0.6.0` · `v0.7.0` · `v0.7.1` · `v0.8.0`
 > · `v0.9.1` · `v0.10.0` · `v0.11.0` · `v0.11.3` · `v0.11.4` · `v0.11.5`
-> · `v1.0.0` · `v1.0.1` · `v1.0.2` · `v1.0.3` · `v1.0.5` · `v1.0.6`。
+> · `v1.0.0` · `v1.0.1` · `v1.0.2` · `v1.0.3` · `v1.0.5` · `v1.0.6` · `v1.0.7`。
 >
 > ⚠️ 這份清單先前只列到 `v0.11.5`，漏了 9 個（含全部 1.x）——
 > 下方個別條目標的「未發布」有幾條也因此不準，**以本行的 API 核對結果為準**。
@@ -13,6 +13,51 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## [1.0.7] — 2026-08-31 · `skip_resume` 預設值只剩一個來源 + 測試閘門解卡
+
+### 🟠 三處各說各話，而其中兩處是死的
+
+```python
+# 讀取 persistent / skip_resume 設定（預設 Workers 每次 fresh start）  ← 註解說 True
+skip_resume = info.get("skip_resume", True)                            ← fallback 寫 True
+# 而 AgentDef.skip_resume 的 dataclass 預設是                          ← 實際 False
+```
+
+那個 `True` 是**死碼** —— `_load_agents_config()` 一定會填這個 key
+（`"skip_resume": a.skip_resume`），所以取不到 fallback。
+真正的預設一直是 dataclass 的 `False`（＝會帶 `--resume`）。
+
+**行為完全不變**，改的是「寫的」與「跑的」一致：
+fallback 直接取 `AgentDef.skip_resume`，預設值只剩一個來源。
+
+> 💡 手寫第二份預設值必然漂移 —— 這次三處剛好湊出兩種相反的說法，
+> 而讀 code 的人會相信註解。
+
+守門 2 條：ast 檢查 fallback 不得是字面值、必須指向 dataclass；
+另一條釘住 `AgentDef.skip_resume is False` ——
+改它會讓所有未設的 agent 從 `--resume` 變成 fresh start，**屬行為變更需拍板**。
+反證：退回寫死的 `True` → 1 紅。
+
+### 🔴 測試基礎設施：全量測試永遠跑不完（不影響 wheel，但影響每一次發版）
+
+`build_release.py` 的測試閘門跑全量 **12 分鐘無進展**，
+卡在 `do_epoll_wait` 且無子進程 —— **閘門形同虛設**（1.0.6 就是這樣被迫
+`--skip-tests` 發出去的）。
+
+真因：`tests/test_v0_11_wiring.py` 的 `_patched_handlers` 只隔離了
+reaction / keep-alive / 授權三個，**漏掉兩個真的會打外部服務的呼叫** ——
+`agent_cli_chat`（走 kiro-cli）與 `simple_chat`（走 Gemini）。
+而 `test_custom_router_exception_falls_back_not_crash` 刻意讓自訂 router 炸掉，
+fallback 走的就是「預設路徑」→ **真的發出去**。
+
+🔴 **它單獨跑 8.4 秒會過、整檔跑也過，只有全量會卡** ——
+本套件記過這個形狀：單獨跑會過、完整跑會壞，通常是隱藏的全域狀態
+或未隔離的外部呼叫。修測試順序是治標，把外部呼叫關掉才是治本。
+
+定位法：`pytest -v -u` 導向檔案，**卡住時最後一行沒有 `PASSED` 的就是元凶**。
+
+該檔 44 passed：**8.30s → 0.86s**；全量 **2471 passed / 6 skipped / 3m24s**
+（本版是閘門修好後第一個真的跑完全量才發出去的版本）。
 ## [1.0.6] — 2026-08-31 · 啟動橫幅不再對 `skip_resume` 說謊
 
 ### 🔴 那不是變數，是字面字串
