@@ -13,6 +13,34 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## [1.0.10] — 2026-09-01 · memory/daily 落盤前對 token 自動遮蔽（機制保底，不靠紀律）
+
+### 🔴 問題：memory 是忠實記錄，紅線靠紀律守不住
+
+`write_daily_log()` 把對話原文截斷後直接落盤到 `memory/daily/YYYY-MM-DD.md`，
+而那個目錄**進版控**。對話裡若出現 token/密鑰，就會被動寫進 git。
+
+SOUL/BRAIN 有紅線「不在 memory 寫入 token」，但那是**紀律**（靠 agent 自律）。
+Paddy 指出的是**機制**問題：memory 不該靠人記得。
+
+### 修法：唯一寫入點加 regex 遮蔽
+
+新增 `memory/redact.py` 純函式，`daily_log.py` 在**截斷之後、寫檔之前**呼叫。
+覆蓋 GitHub（classic/fine-grained）、AWS akid/secret、OpenAI/Anthropic `sk-`、
+Google `AIza`、Slack `xox`、JWT、`Bearer`、通用 `password/token/secret/api_key=` 賦值。
+輸出 `ghp_****`（**保留前綴**，事後看得出洩漏的是哪類憑證，但不洩漏值）。
+
+- **必須在截斷之後**：`[:N]` 可能把 token 切一半，遮蔽 regex 就抓不到完整 pattern
+- **一處涵蓋所有 agent**：`daily_log` 是單一寫入點（唯一出口 `get_agent_memory_dir`）
+- **寧可多遮**：誤遮代價是 daily log 少一段；漏遮代價是進版控
+
+### 守門 17 條（反證通過）
+
+純函式層 11 種憑證各 1 條 + 非機密不受影響 + 行為層（真落盤驗無原始 token）+
+掃描層（redact 必須在 write 之前）。**反證**：移除 `daily_log` 的 redact 呼叫 → 行為層與掃描層各紅 1 條。
+
+---
+
 ## [1.0.9] — 2026-08-31 · 1.0.8 只修對一半：引擎欄繞過了 env 覆寫那一層
 
 ### 🔴 實機一測就露餡
