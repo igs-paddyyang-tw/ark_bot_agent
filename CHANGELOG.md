@@ -13,6 +13,23 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## [1.0.11] — 2026-09-08 · /status 與 /help 的 TG 回覆加上版本號
+
+使用者要在 TG 更容易看到版本。原本只有**啟動通知**（`bot/main.py`）與
+**`/start`**（`handlers.cmd_start`）顯示 `v{__version__}`，`/status` 與 `/help`
+都沒有 —— 而這兩個是使用者最常主動打的指令。
+
+- `cmd_help`：結尾加 `📦 v{__version__}`
+- `cmd_status`：面板末行加 `• 版本：v{__version__}`
+
+版本來源都是 `ark_bot_agent/__init__.py` 的 `__version__`（單一真相）。
+
+**守門** `tests/ark_bot_agent/test_status_help_version.py`：**行為層**驗證 ——
+實際呼叫 handler、捕捉 `reply_text` 內容，斷言含**當前** `__version__`
+（動態比對、不寫死版號，升版後不會誤紅）。不用字串掃描原始碼
+（本套件記過「用字串比對判斷程式結構」的坑）。
+反證：移除版本行 → 2 條全紅；還原 → 綠。ark_bot_agent 測試 507 passed。
+
 ## [1.0.10] — 2026-09-01 · memory/daily 落盤前對 token 自動遮蔽（機制保底，不靠紀律）
 
 ### 🔴 問題：memory 是忠實記錄，紅線靠紀律守不住
