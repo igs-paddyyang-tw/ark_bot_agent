@@ -13,6 +13,32 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## [1.0.12] — 2026-09-08 · 修 report.min_chars 過低：短回覆被誤產成 HTML 報告
+
+真實事故：使用者在 agent 模式問「你是誰」，manager-agent 回了 413 字，
+結果被當附件產成 HTML 報告丟給使用者。
+
+根因在 `config.py` 的 `ReportConfig.min_chars = 150` —— 太低。
+`router._maybe_report` 的判準是「回覆 ≥ min_chars 就走報告管線」，
+而一段正常的自我介紹（413 字）就超過 150。
+
+而同一套系統的 `summarizer.should_summarize` 門檻是 **> 3500**、
+`should_send_report` 是 **> 4000**（對齊 TG 單則上限 4096）——
+**兩套門檻嚴重不一致**：router 層 150 字就產報告，summarizer 層要 3500 才摘要。
+
+**修法**：`min_chars` 150 → **3500**，對齊 `should_summarize` 與 TG 上限。
+判準統一為「只有一則訊息塞不下的長內容才值得轉報告」，短回覆直接純文字回。
+
+**守門** `tests/ark_bot_agent/test_integration.py`：
+- 新增 `test_medium_reply_no_report_by_default`（病例回放：413 字回覆在預設門檻下不產報告、無 HTML 產出）
+- 既有 `LONG` fixture 從 `* 20`（≈240 字）加長到 `* 300`（>3500）——
+  原本它依賴舊的 150 門檻，改門檻後要跟著加長才能繼續測「長回覆會產報告」
+
+反證：min_chars 改回 150 → 病例回放守門紅；還原 → 綠。ark_bot_agent 508 passed。
+
+> ⚠️ **行為變更**：150–3500 字的回覆從「產 HTML 報告附件」變成「直接純文字回」。
+> 需要對長回覆產報告的部署，可在 `bot.yaml` 設 `report.min_chars` 調低。
+
 ## [1.0.11] — 2026-09-08 · /status 與 /help 的 TG 回覆加上版本號
 
 使用者要在 TG 更容易看到版本。原本只有**啟動通知**（`bot/main.py`）與
