@@ -13,6 +13,58 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## [1.0.14] — 2026-09-09 · daily log 不再落盤 kiro-cli 的工具雜訊
+
+`agent/process.py` 把 **kiro-cli 的原始 stdout** 塞進 `conversation`，
+而清洗發生在下游（TG 層的 `_clean_output`）→ **畫面乾淨、存檔是髒的**。
+
+實測落盤結果：
+
+```
+- A: OUTPUT: > thThe user wants me to analyze logs and system architecture...
+- A: OUTPUT: I will run the following command: … (using tool: shell)
+```
+
+全機統計：paddy-bot `OUTPUT:` **13 檔** / `I will run` 6 檔 / `using tool:` 5 檔；
+ninja-bot 也中（4 + 3 個 agent 檔）。
+
+🔴 **而 daily log 會被 LLM 蒸餾進 `memory/memory.md`**（`memory/consolidate.py`，
+長期記憶）——「`paddy-agent` 是由 Google 訓練的大型語言模型」就是這樣進去的。
+**污染會沉澱成 agent 對自己身分的錯誤認知。**
+
+> 同型於本套件 0.4.2 記過的「清洗與報告的順序反了 —— 畫面乾淨、存檔是髒的」。
+> 那次修的是 MD/HTML 報告，這次是 daily log —— **第三個出口**。
+
+### 🔴 為什麼修在呼叫端而不是單一寫入點
+
+`write_daily_log` 是單一寫入點（機密遮蔽 1.0.10 就掛在那裡），直覺上該修那裡。
+**但實測不行**：
+
+| 輸入 | 清洗結果 |
+|---|---|
+| 完整多行 stdout | ✅ 有效 |
+| 已截斷的 `OUTPUT: > th…` | 🔴 **無效** |
+
+`extract_final_reply` 的 `> ` 前綴提取**要求行首**，而截斷後它被包在
+`OUTPUT: ` 中間。**所以順序是硬的：先清洗、再截斷** ——
+而只有呼叫端手上有完整的 output。
+
+### ⚠️ 清洗提到兩個 try 之外
+
+`_clean` 被 `write_daily_log` 與 `recommend_skill` **兩個獨立 try** 使用。
+放在第一個 try 內的話，它失敗時第二個會 `NameError`，
+而那個 except 是 `log.debug` —— **靜默吞掉**。
+清洗本身包在 try 內並 fallback 回原始 output（寧可髒不要空）。
+
+順帶：`recommend_skill` 也改吃清洗後的值 ——
+它會把 `using tool: shell` 當成使用者的需求訊號。
+
+### 守門
+
+`tests/ark_bot_agent/test_daily_log_noise.py` **8 條**，反證 3 項各紅。
+其中一條**刻意釘住一個限制**（截斷後的單行清不掉）——
+若哪天上游改進了它會紅，那時該重新評估接入點而不是刪掉它。
+
 ## [1.0.13] — 2026-09-09 · 新增 /publish 發布上線機制（deterministic git 護欄）
 
 新增 menu cmd `/publish`（admin only）：admin 按下 → 確認 → 觸發 admin-agent
