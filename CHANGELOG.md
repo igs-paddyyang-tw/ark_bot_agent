@@ -13,6 +13,35 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## [1.0.13] — 2026-09-09 · 新增 /publish 發布上線機制（deterministic git 護欄）
+
+新增 menu cmd `/publish`（admin only）：admin 按下 → 確認 → 觸發 admin-agent
+更新 `MEMORY.md` / `README.md` → 套件寫死的 `publish_repo()` 安全 commit + pull + push。
+
+**設計核心：git 安全護欄全部寫在 Python，不靠 LLM agent 記得。**
+本專案栽在共用 working tree 太多次（`git add -A` 帶走別人的檔、pathspec 防不住
+同檔別人的行、`pull --rebase` 撞未提交變更）——這些是程式碼強制，不是 prompt 提醒。
+
+`publish_repo(files, message, *, repo_dir, push=True) → PublishResult` 六步：
+1. **validate**：白名單（只 `MEMORY.md` / `README.md`）+ 機密樣式 + 路徑逃逸 + 存在
+2. **diff**：逐檔比 HEAD，剔除無變更（全無變更 → `no_change`）
+3. **add**：只精確路徑（`git add -- <file>`），**程式碼裡根本不組 `-A`/`.`/`-u`**
+4. **commit**：帶 pathspec（`-- <files>`），不夾帶 index 其他 staged
+5. **pull**：fetch 後算「遠端要動的檔 ∩ 本地未提交的檔」，**交集非空 → `blocked` 不 merge/push**；空則 merge（不用 rebase，會被 unstaged 擋）
+6. **push**：merge-base 零誤刪檢查後才 push
+
+決策：branch 讀當前值不寫死；`/publish <訊息>` 可帶自訂 commit 訊息，空則 agent 產生；
+admin-agent 限定「追加/更新特定段落」不整檔重寫。
+
+**守門** `tests/ark_bot_agent/test_publish.py`（13 條，真實 git repo + bare remote）：
+白名單擋非白名單、路徑逃逸、交集 → blocked、交集空 → merge+push、commit 不夾帶其他 staged、
+`ast` 驗原始碼無 `add -A`。反證：移除交集檢查 / 改 `add -A` / 移除白名單 → 對應守門全紅
+（過程中抓到一個空守門：原斷言只驗 `blocked+README in detail`，而 merge abort 也符合 →
+收緊為斷言交集特有的「衝突於」訊息）。
+
+> 順帶：守門 `test_no_module_hardcodes_chat_fallback` 抓到確認訊息寫死了「admin-agent」——
+> 別的部署的 admin 不一定叫這名，改為泛稱。ark_bot_agent 521 passed。
+
 ## [1.0.12] — 2026-09-08 · 修 report.min_chars 過低：短回覆被誤產成 HTML 報告
 
 真實事故：使用者在 agent 模式問「你是誰」，manager-agent 回了 413 字，
