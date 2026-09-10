@@ -13,6 +13,81 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## 1.0.15 (2026-09-10)
+
+### 🔴 Agent 模式「沒重啟卻忘記上下文」—— fallback 漏了 `--resume`
+
+使用者回報「Agent 與 Team 的常駐模式不是真的，沒重啟卻忘記上下文」。
+實測根因**不是常駐沒生效**，而是：
+
+```
+kiro-cli 的 session key = cwd（data.sqlite3 的 conversations_v2.key）
+
+帶 --resume 兩次        → 記得先前給的代號 ORANGE-8371
+中間插一次不帶          → conversation_id 1b431376 → 1726c453（同 key 被換掉）
+再帶 --resume 問同一件事 → 「不記得」
+```
+
+**不帶 `--resume` 不是「這次沒有脈絡」，是把累積的記憶整個換掉。**
+
+而 `cli.agent_cli_chat` 的 fallback（常駐池不在時走的那條）自己組指令，
+**漏了 `--resume`**：
+
+```python
+cmd = ["kiro-cli", "chat", "--no-interactive", "--trust-all-tools", injected]
+```
+
+池一 crash／被 idle 回收／還沒起來，那一則訊息就清空該 agent 的記憶
+—— 而 log 完全乾淨、`degraded` 也不會有東西。
+
+### 收成單一出口，不是各自補一行
+
+`--resume` 原本在兩處各組一次（`AgentProcess.BACKENDS` 與 fallback）。
+本套件記過「同一事實寫兩處必然漂移」四次以上；這次漂移的是一個
+**破壞性**旗標 → 抽出 `process.build_backend_cmd()`（唯一一處）。
+
+收的過程發現兩份實作的**第三處分歧**：`claude` 分支在 pool 那份無條件送
+`--model auto`（不是真的 model 名），fallback 那份完全不送。
+三個 backend 已統一成「`auto` 就不帶 `--model`」。
+逐 backend 驗過新出口與原 fallback 指令**逐項相同**（`resume=False` 時）。
+
+### ➕ 新設定 `resume: true|false`（`skip_resume` 保留相容）
+
+| `resume` | `skip_resume` | 結果 |
+|---|---|---|
+| 未設 | 未設 | ✅ 帶（與 1.0.14 相同） |
+| 未設 | `true` | ❌ 不帶（legacy，行為不變） |
+| `false` | — | ❌ 不帶（新寫法） |
+| `true` | `true` | ✅ 帶 → **`resume` 勝並警告** |
+
+正向欄位勝過 legacy 的雙重否定：設定檔兩個欄位打架時，
+讀設定的人會照正向那個的字面理解。
+
+- 單一出口 `AgentDef.resume_enabled`；`AgentProcess` 內部**只存 `resume` 一份**，
+  `skip_resume` 降為無 setter 的 property（有 setter 就有兩個寫入端）
+- `build_backend_cmd` 的 `resume` 預設是 `True` —— 破壞性旗標的預設要往安全方向倒
+- 啟動橫幅改印 `resume=%s`（實際值，不是字面字串）
+
+⚠️ **`fresh=True` 仍然不帶 `--resume`**（Team 模式的規劃與驗證走這條）。
+那是呼叫端明確要求，但代價已寫進程式碼：**它會清掉 leader 的 session**。
+屬設定層取捨，本版不改行為。
+
+### 順帶：`.env` 死設定掃描器的假警報（擋住全量測試）
+
+`check_env_wiring.py` 只認 `os.getenv` 這種 `Attribute` 形狀，
+所以 `session_web/flags.py` 的 `_on("ARK_KIRO_TAIL_ENABLED")` 看不見
+→ 那個 flag 被誤報成死設定，**而它每次 import 都在讀**。
+補一層「同檔模組層 helper」追蹤，判準刻意不放寬成「任何字串引數的呼叫」
+（那會讓掃描器再也抓不到任何死設定 —— 永遠綠的空守門比誤報更糟）。
+
+### 測試
+
+`tests/ark_bot_agent/test_resume_flag.py` 22 條 +
+`test_startup_log_truthful.py` 改為 legacy／新欄位**各驗兩個方向**
+（log／屬性／實際指令三層）+ 掃描器守門 2 條。全量 **3118 passed**。
+反證 7 項全部有紅（其中一條第一版是空的 —— fixture 走不到那條路，
+反證沒紅才發現）。
+
 ## [1.0.14] — 2026-09-09 · daily log 不再落盤 kiro-cli 的工具雜訊
 
 `agent/process.py` 把 **kiro-cli 的原始 stdout** 塞進 `conversation`，
