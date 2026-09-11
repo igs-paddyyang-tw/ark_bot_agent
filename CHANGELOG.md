@@ -13,6 +13,43 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## 1.0.16 (2026-09-11)
+
+### 訂正 1.0.15 的註解：`--resume` 的機制描述錯了
+
+**無行為變更 —— 只有註解與測試。**
+
+1.0.15 的註解寫「不帶 `--resume` 會清空記憶／舊歷史從此取不回」。
+實測（kiro-cli 2.21.1）更精確的是：
+
+- session 以 **cwd 為 key**，同一個 cwd **可以有多個**
+  （實測 `agents/leader-agent` 有 14 個）
+- `--resume` 的語意是 `--help` 原文的
+  「Resume the **most recent** conversation from this directory」
+- 不帶它 → **另開新 session 並成為最新**；**舊的沒有被刪**
+  （`--resume-id <SESSION_ID>` / `--resume-picker` / `-l` 還找得到）
+
+實測證據（同一個 cwd）：
+
+```
+1b431376  35,162B  含 ORANGE-8371 ✅   ← 舊 session 還在
+1726c453  35,120B  含 ORANGE-8371 ❌   ← 不帶 --resume 建的新 session（成為最新）
+```
+
+對使用者的體感一樣（agent 忘記），**但機制不同 —— 而機制決定了可行的修法**
+（例如用 `--resume-id` 釘住 session，那在「已被刪除」的模型下不可能）。
+
+> 💡 **誤導性的註解比沒有註解更糟**：寫「刪除」的話，
+> 下一個人不會想到那些資料其實還救得回來。
+
+已加守門 `TestMechanismIsDescribedAccurately` 釘住措辭兩個方向
+（不得出現「取不回／清空記憶」，且必須出現「另開一個新 session」與
+「最近一個」與「resume-id」）—— 只驗一個方向的話，把錯的刪掉而沒寫對
+仍會全綠。
+
+順帶更新 `test_fresh_is_the_only_intentional_no_resume` 的斷言 ——
+它原本寫 `"清" in seg`，**跟著錯的措辭走，於是改對之後反而變紅**。
+
 ## 1.0.15 (2026-09-10)
 
 ### 🔴 Agent 模式「沒重啟卻忘記上下文」—— fallback 漏了 `--resume`
