@@ -13,6 +13,24 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## 1.0.17 (2026-09-14)
+
+### mode 切換留痕 —— `switch_mode` 補一行可觀測 log
+
+使用者回報「bot 切換 mode 看不到 log 切換」。讀碼確認 `callback_switch_agent`
+（handlers）與 `switch_mode`（session）**兩層都沒有任何 log** —— 不是壞掉，是從沒寫。
+症狀：使用者回報「切了 mode 但行為怪」時，log 裡查不到切到哪，**除錯訊號不存在**
+（本專案 BRAIN：失敗症狀是看不見而非報錯）。
+
+修法：在 `session.py switch_mode()` 加一行 `log.info("🔀 MODE user=… kind=… agent=… mode=…")`。
+
+**加在 `switch_mode` 而非 handler 是刻意的** —— 它是**單一出口**（`switch_agent`
+相容層、`/mode` 指令、TG 按鈕 callback 都經過它），一處涵蓋所有切換來源。
+守門 `test_switch_mode_observable.py` 有一條就是釘住「經 switch_agent 也要有 log」。
+
+守門 +3，**反證 3 項全紅**（移除 log 行 → 三條測試全部變紅）。
+實機驗證（paddy-bot，真實 TG 按鈕）：切 team→agent→chat→agent→team 五次，log 一一對上。
+
 ## 1.0.16 (2026-09-11)
 
 ### 訂正 1.0.15 的註解：`--resume` 的機制描述錯了
