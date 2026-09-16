@@ -13,6 +13,49 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## 1.0.18 (2026-09-16)
+
+### 🔴 W0 安全止血 —— 路徑穿越可讀出 `.env` 的 token
+
+機制審查在 1.0.16 的 wheel 上找出 22 個 finding，W0 取其中
+「安全邊界破口 + 語意失真 + 妨礙工具」這幾項（修法明確、驗收可腳本判定）。
+
+⚠️ **這批修法在 1.0.17 裡沒有** —— 1.0.17 的內容是 `switch_mode` 留痕，
+而 W0 是它之後才完成的。實測已發的 1.0.17 wheel：無 `safe_join`、
+無 `server/auth.py`、`host` 仍是 `0.0.0.0`。
+
+| AC | 內容 |
+|---|---|
+| **AC-1/2** | `paths.safe_join()` + `PathEscape`；wiki 端點三分支改用它 —— 原本 `%2e%2e`（解碼後 `../`）**可讀出 wiki 根以外任意檔案，實測讀出 `.env` 的 token** |
+| **AC-3/5** | 新增 `server/auth.py`（`require_auth` / `require_admin`）+ 端點分級 `Depends`；無 token 回 **503**、錯 token 回 **401** |
+| **AC-4** | `config.server.host` `0.0.0.0` → **`127.0.0.1`**（要對外請明寫並設 auth） |
+| AC-6 | 未知 `agent_id` → `CliResult.fail(not_found)`，**不 fallback、不 spawn**（ghost agent 不再燒資源） |
+| AC-7 | `agent/process.py` 的 `progress_parser` 改套件絕對路徑 |
+| AC-8 | `llm/provider.py` 去 BOM + 新增 `scripts/check_source_hygiene.py` 守門 |
+
+### ⚠️ 行為變更（升級前請確認）
+
+- **`host` 預設改為 `127.0.0.1`** —— 原本對外提供服務的部署要在
+  `bot.yaml` 明寫 `server.host: "0.0.0.0"` **並設 auth token**，否則升級後外部連不上。
+- **需驗證的端點在沒設 token 時回 503** —— 那是刻意的（「沒設定」與「設錯」要能分辨）。
+
+### 驗收
+
+BOM=0、`check_source_hygiene` rc=0（**反證：加 BOM → rc=1**）、
+`host=="127.0.0.1"`、產出 7 個檔齊全、全量 **3298 passed / 29 skipped**。
+
+### 🔴 順帶修掉一個 fixture 污染
+
+`test_api_auth_matrix` 的 `app_routes` fixture 設 `ARK_BOT_HOME=tmp_path` 後
+**import `server.main`** —— 那會連帶載入一串模組，而它們的 `KNOWLEDGE_DIR` /
+`TEMPLATES_DIR` 是**在 import 當下**算好的，`sys.modules` 快取讓值**凍在 tmp_path**。
+`get_home.cache_clear()` 清得掉函式快取，**清不掉模組層常數**。
+
+症狀：路徑常數守門**全量跑紅、單獨跑綠**。
+修法：teardown 移除**本 fixture 造成的**模組條目（進入前的集合取差集）——
+**移除 `sys.modules` 條目而不是 `importlib.reload`**，因為 reload 會重新執行
+模組層程式碼（可能有副作用），而我們要的只是「讓下次 import 重算」。
+
 ## 1.0.17 (2026-09-14)
 
 ### mode 切換留痕 —— `switch_mode` 補一行可觀測 log
