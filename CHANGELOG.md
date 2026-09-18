@@ -13,6 +13,76 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## 1.0.19 (2026-09-18)
+
+### 🔴 B-13 · steering 注入加上限 —— SOUL / BRAIN / TEAM 原本整份無限制
+
+`context_builder.build_default_system_prompt` 的前三項（SOUL.md / BRAIN.md /
+TEAM.md）原本是 `read_text()` **整份塞進 prompt、完全沒有上限**，而記憶那兩項
+（memory.md / recent.md）反而有 1500 字元的 `_clip()`——「**有上限的是小的、
+沒上限的是大的**」。steering 正是最容易長大的那類：team 側記錄過
+`.kiro/steering/MEMORY.md` 曾達 192KB。無上限的話一個膨脹的 steering 檔
+會無聲撐爆整個 context。
+
+- 新增 `_STEERING_CLIP = 8000`（字元），三處注入複用既有的誠實截斷 `_clip()`
+  —— 真的截才留標記，並說明省略了多少字元
+- 值的選定：steering 是人格／規範，語意密度比滾動記憶高，正常大小也較大
+  （實測本機 SOUL 1330 / BRAIN 3017 / TEAM 2406 字元）。8000 對現況有 >2× 餘裕，
+  又能在異常膨脹時擋住
+- BRAIN 先去 frontmatter 再截（截的是實際注入的正文）
+- 守門 `TestSteeringClip` 4 條：三處注入經 `_clip`（ast 檢查引數）、prompt builder
+  無裸 `read_text()`、常數兩方向界限（太小切碎／太大形同無限）、超 cap 誠實標記。
+  反證三方向全紅
+
+> 🔴 這是 team 側「context 有預算」對齊到 bot 側的第一步（W1）。team 側是整體
+> 250K 字元的 governor，bot 側架構不同（逐檔 read_text），所以採 per-檔案上限。
+>
+> 💡 本版是 B-12（editable 修復）之後第一個「改 src → 重啟即驗到」的 bot 修法：
+> paddy-bot 重啟後實測 192KB steering → 8036 字元含標記，閉環驗證完整。
+
+
+
+### 🔴 W0 安全止血 —— 路徑穿越可讀出 `.env` 的 token
+
+機制審查在 1.0.16 的 wheel 上找出 22 個 finding，W0 取其中
+「安全邊界破口 + 語意失真 + 妨礙工具」這幾項（修法明確、驗收可腳本判定）。
+
+⚠️ **這批修法在 1.0.17 裡沒有** —— 1.0.17 的內容是 `switch_mode` 留痕，
+而 W0 是它之後才完成的。實測已發的 1.0.17 wheel：無 `safe_join`、
+無 `server/auth.py`、`host` 仍是 `0.0.0.0`。
+
+| AC | 內容 |
+|---|---|
+| **AC-1/2** | `paths.safe_join()` + `PathEscape`；wiki 端點三分支改用它 —— 原本 `%2e%2e`（解碼後 `../`）**可讀出 wiki 根以外任意檔案，實測讀出 `.env` 的 token** |
+| **AC-3/5** | 新增 `server/auth.py`（`require_auth` / `require_admin`）+ 端點分級 `Depends`；無 token 回 **503**、錯 token 回 **401** |
+| **AC-4** | `config.server.host` `0.0.0.0` → **`127.0.0.1`**（要對外請明寫並設 auth） |
+| AC-6 | 未知 `agent_id` → `CliResult.fail(not_found)`，**不 fallback、不 spawn**（ghost agent 不再燒資源） |
+| AC-7 | `agent/process.py` 的 `progress_parser` 改套件絕對路徑 |
+| AC-8 | `llm/provider.py` 去 BOM + 新增 `scripts/check_source_hygiene.py` 守門 |
+
+### ⚠️ 行為變更（升級前請確認）
+
+- **`host` 預設改為 `127.0.0.1`** —— 原本對外提供服務的部署要在
+  `bot.yaml` 明寫 `server.host: "0.0.0.0"` **並設 auth token**，否則升級後外部連不上。
+- **需驗證的端點在沒設 token 時回 503** —— 那是刻意的（「沒設定」與「設錯」要能分辨）。
+
+### 驗收
+
+BOM=0、`check_source_hygiene` rc=0（**反證：加 BOM → rc=1**）、
+`host=="127.0.0.1"`、產出 7 個檔齊全、全量 **3298 passed / 29 skipped**。
+
+### 🔴 順帶修掉一個 fixture 污染
+
+`test_api_auth_matrix` 的 `app_routes` fixture 設 `ARK_BOT_HOME=tmp_path` 後
+**import `server.main`** —— 那會連帶載入一串模組，而它們的 `KNOWLEDGE_DIR` /
+`TEMPLATES_DIR` 是**在 import 當下**算好的，`sys.modules` 快取讓值**凍在 tmp_path**。
+`get_home.cache_clear()` 清得掉函式快取，**清不掉模組層常數**。
+
+症狀：路徑常數守門**全量跑紅、單獨跑綠**。
+修法：teardown 移除**本 fixture 造成的**模組條目（進入前的集合取差集）——
+**移除 `sys.modules` 條目而不是 `importlib.reload`**，因為 reload 會重新執行
+模組層程式碼（可能有副作用），而我們要的只是「讓下次 import 重算」。
+
 ## 1.0.18 (2026-09-16)
 
 ### 🔴 W0 安全止血 —— 路徑穿越可讀出 `.env` 的 token
