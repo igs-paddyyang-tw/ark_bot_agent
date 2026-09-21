@@ -13,6 +13,51 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## 1.1.0 (2026-09-21)
+
+### ✨ 排程直接派工給 agent（PTB JobQueue 版）
+
+bot 現在能**定時把一段 prompt 派給指定 agent**，而不只是被動等使用者互動。
+與 team 側 scheduler 的 `target`/`prompt`/`cron` 能力對齊 —— **這是能力對齊，
+不是架構合併**：bot 仍是個體模式，只是多了一種排程觸發型態。
+
+**為什麼不改 `schedule_engine.py`**：它是死碼（`config.NOT_WIRED["scheduler"]`
+明文宣告「零呼叫者」）。bot 的真實排程走 **PTB JobQueue**，所以新機制掛在
+`bot/main.py::_post_init`，用 `application.job_queue.scheduler`（實測是 APScheduler
+`AsyncIOScheduler`）+ `CronTrigger.from_crontab` —— 5 欄位標準 cron（含 `1-5`
+限平日）原生支援，不需在 callback 自己判斷星期。
+
+**新增模組**：`bot/schedule_dispatch.py`。**新排程檔**：`bot-schedule.yaml`
+（專屬，與 team 的 `scheduler.yaml` 隔離，避免兩服務掛同批 job 重複派工）。
+
+格式（缺檔＝不排程，不阻擋啟動）：
+```yaml
+timezone: Asia/Taipei
+jobs:
+  - name: daily-report
+    enabled: true
+    cron: "30 8 * * 1-5"
+    target: news-agent          # 必須在 get_dispatchable_agents()
+    prompt: "整理今天的重點，{date}"
+    notify: { chat_id: "${TELEGRAM_ADMIN_CHAT}" }   # 選填，派工結果推 TG
+```
+
+實作細節：
+- 派工走既有 `agent_cli_chat(..., fresh=True)`（自足 prompt 不需歷史），
+  prompt 帶 `[scheduler:{name}]` 前綴讓下游辨識來源。
+- `{date}` 在**觸發當下**展開（不在掛載時，否則凍在啟動那天）。
+- target 用 `get_dispatchable_agents()` 驗證；不可派工只 log、不拋、不影響其他 job。
+- 結果推播用 JobQueue callback 天然持有的 `context.bot.send_message`。
+- 掛載失敗**絕不阻擋 Bot 啟動**（對齊 skills-align / preflight 段）。
+
+🔴 **與 `features.scheduler` 開關無關** —— 那個布林綁的是死碼 ScheduleEngine，
+本機制是獨立的 JobQueue 派工。不要以為「scheduler 終於接上了」。
+
+守門：7 個場景 14 條測試，5 個關鍵反證全部驗過（互斥、`{date}` 凍住、
+notify 誤推、target 驗證移除、失敗不隔離）。
+
+**本版只做 agent 派工型**（YAGNI），workflow 型排程待有需求再加。
+
 ## 1.0.20 (2026-09-18)
 
 ### 🔴 B-02 · bot 側 preflight 探針 —— 讓「服務全綠但不能用」浮上來
