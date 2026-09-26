@@ -13,6 +13,38 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## 1.2.0 (2026-09-27)
+
+### ✨ 快答模式 Jev selector + 條件式 prompt + run_script（三合一）
+
+**核心：快答（chat）模式接上 TypeSafe Jev 決策層，並讓它能執行腳本。**
+
+- **Jev 前置決策**（feature flag `chat.jev_enabled`，預設關）：
+  用 Jev（System One 分類模型，不生成文字）判使用者意圖 → 決定回覆風格（compose_mode）。
+  Jev 只做「選擇 + 置信度」，回覆生成仍靠 LLM（Gemini/OpenAI）。
+  🔴 無 key / 低信心（< `jev_confidence_threshold`）/ 例外一律 fallback 回現有純 Gemini ReAct
+  —— 確保 Jev 的不確定不害使用者。Phase 1 實測繁中意圖準確率 93.3%。
+  🔴 fan-out 約束：多個判斷合併成單次呼叫（實測分次呼叫延遲 5x / 成本 3.4x）。
+
+- **compose mode 條件式 prompt**（`build_default_system_prompt(compose_mode=)`）：
+  依 answer/copy/code 附加對應風格區塊。預設 answer 不附加 → 向後相容。
+  🔴 此項不依賴 Jev，純 Gemini 也能用。
+
+- **run_script 工具**（套件內建，預設不在 chat 白名單，opt-in）：
+  讓快答能執行 `scripts/` 與 `.kiro/skills/*/scripts/` 下的 `.py`。
+  🔴 安全：realpath 封閉檢查（防路徑穿越）、只 `.py`、`requires_approval`、逾時保護。
+  守門反證抓到「移除封閉檢查會真的執行 start-bot.py」→ 斷言收緊為「必須白名單拒絕而非逾時」。
+
+- **search_wiki 修復**：改走 v3 引擎（與 team `wiki_query` 同一份）。
+  🔴 真因：舊 `WikiEngine.search_exact` 對 metadata.json 格式假設錯（dict vs list）
+  → TypeError 被 except 吞成「查無」；且舊 metadata 是靜態快照不含新頁面。
+  改走 v3 後掃全 domain、即時查最新。
+
+- **快答來源標記**（`chat.show_source`，預設開）：
+  回覆末尾標「— 💬 快答 · {model} · Jev:{意圖→mode(信心)}」，Jev 判定軌跡可見。
+
+守門測試 +30 餘條，反證確認 fallback / 安全邊界有效。全 bot 測試 667 passed。
+
 ## 1.1.1 (2026-09-21)
 
 ### 🔧 啟動通知豐富化 —— 分得出「例行重啟 / 版本更新 / 異常」
