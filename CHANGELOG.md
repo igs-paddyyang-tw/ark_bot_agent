@@ -13,6 +13,33 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## 1.3.0 (2026-09-27)
+
+### ✨ TG 檔案/圖片上傳處理管道
+
+**問題**：`main.py` 只註冊 `filters.TEXT`，使用者上傳的檔案/圖片訊息被 PTB 直接忽略
+——agent 收不到也拿不到，只能複製貼上文字、圖片完全無法處理。
+
+**做了什麼**：
+
+- **接收層**（`file_handler.py`）：新增 `Document.ALL | PHOTO` handler，
+  file_id → `get_file()` → `download_to_drive()` 落地到 `temp/{date}/`，
+  下載後組合成訊息「使用者上傳了 X 於 {path}」餵給既有對話流程。
+- **安全**（🔴 使用者上傳是敵意輸入）：檔名消毒（去 `/` 與 `..`）+ realpath 封閉檢查
+  （落點必須在 temp 根下）+ 副檔名白名單（文件/圖片允許，`.py`/`.sh` 等可執行類隔離不執行）
+  + 20MB 上限。守門反證確認封閉檢查有效。
+- **圖片多模態**（`gemini.describe_image`）：讀圖 → base64 inline_data → Gemini 文字描述，
+  僅使用者明確要求時呼叫（成本控制）。
+- **三階段生命週期**（`file_lifecycle.py`）：
+  `temp/{date}/`（未分析）→ `knowledge/raw/uploads/{source-id}/`（AI 分析後歸位，
+  帶來源符合 provenance）→ 正式目錄（artifacts/exports；文件走既有 wiki ingest）。
+  每次搬移寫 log 可稽核。source-id = `{date}-{序號}`；圖片帶 AI 描述 side-car md。
+- `handle_message` 加 `injected_text` 參數（檔案訊息的 `message.text` 是 None）。
+
+守門 12 條 + 反證。全 bot 測試 679 passed。
+🔴 過程抓到一個縮排 bug（別名函式誤插進 `handle_message` 函式體中間，導致後半邏輯脫離）
+—— 全套測試（group_policy 那條）擋下，印證「改函式簽名後要跑全套」。
+
 ## 1.2.0 (2026-09-27)
 
 ### ✨ 快答模式 Jev selector + 條件式 prompt + run_script（三合一）
