@@ -26,7 +26,7 @@
 
 | 套件 | 模式 | 一句話 | 適用 |
 |------|------|--------|------|
-| [`ark_team_agent`](https://github.com/igs-paddyyang-tw/ark_team_agent) | **團隊** | 多 agent 常駐、群組 topic 路由、決策矩陣、排程 | 一個專案養一支長期團隊 |
+| [`ark_team_agent`](https://github.com/igs-paddyyang-tw/ark-agent-team) | **團隊** | 多 agent 常駐、群組 topic 路由、決策矩陣、排程 | 一個專案養一支長期團隊 |
 | **`ark_bot_agent`（本套件）** | **個體** | 單一 Bot + 三種對話模式 + 選擇性派工 | 一個人要一個什麼都能問的入口 |
 
 **兩者互不依賴、不合併。** 選錯會很痛：團隊模式的複雜度（topic 路由、
