@@ -13,6 +13,69 @@
 > 頂部曾有 0.10.1 / 0.7.2 的重複摘要（`ccac2b1` 補條目時錯插）+ 0.11.5 掉標題，
 > 2026-08-25 已重排修正（完整版在下方各自版號處）。
 
+## 1.3.2 (2026-09-30)
+
+### 🔧 bot 自我更新機制（移植自 team）+ 各自的更新來源
+
+bot（`ark_bot_agent`）原本**沒有任何自我更新機制** —— 只有 team 有。
+移植 team 成熟的 `version_check` + `updater`，讓 bot 部署（nana-bot / ninja-bot）
+也能查新版與一鍵更新。三者更新來源**各自獨立**：
+
+| 套件 | 更新來源 repo |
+|---|---|
+| agent（team）| `ark-agent-team` |
+| skill | `ark-agent-skills` |
+| **bot** | **`ark-agent-bot`**（本版新增）|
+
+- **token 選配**：發版 repo 已 public，無 `GITHUB_TOKEN` 也能匿名查/下載
+  （實測匿名 200）；有 token 就帶上提高 rate limit。
+- **editable 保護**：開發源（paddy）偵測到 editable 安裝時拒絕裝 wheel
+  （避免蓋掉 `src/` 即時生效）。
+- **驗 wheel 內容不驗檔名**：版號比對 + zip 完整性 + 空殼偵測。
+- 守門 8 條（repo 名 / 無 token 查+下載 / 有 token 帶 auth / editable 拒更新 /
+  版號數字比較 / 查不到不誤報）。
+
+
+
+
+原本 `jev_client._API_URL` 硬編正式端點，各部署無法指定不同端點
+（自架 proxy / 測試環境）。改為 `_api_url()` 於 request time 讀
+env `TYPESAFE_API_URL`，**預設仍是正式端點**（不設 env 時行為與舊版完全相同）。
+
+- key 仍走 `TYPESAFE_API_KEY`（機密，不入 log）；端點才是這次新增的可覆寫項。
+- `.env` 需要的兩個變數：`TYPESAFE_API_KEY`（必要）、`TYPESAFE_API_URL`（可選）。
+- 守門 4 條（預設值／env 覆寫／請求實際用到覆寫值／反證：不設 env 打正式端點）
+  + 反證（忽略 env 恆回預設 → 2 覆寫測試紅、2 預設測試綠）。
+
+> 🔴 生效前提：bot 部署要升到本版（≥1.2.0 才有 Jev）+ `.env` 設 key
+> + `chat.jev_enabled: true`。缺任一都會靜默走純 Gemini fallback。
+
+
+
+
+**問題**：`main.py` 只註冊 `filters.TEXT`，使用者上傳的檔案/圖片訊息被 PTB 直接忽略
+——agent 收不到也拿不到，只能複製貼上文字、圖片完全無法處理。
+
+**做了什麼**：
+
+- **接收層**（`file_handler.py`）：新增 `Document.ALL | PHOTO` handler，
+  file_id → `get_file()` → `download_to_drive()` 落地到 `temp/{date}/`，
+  下載後組合成訊息「使用者上傳了 X 於 {path}」餵給既有對話流程。
+- **安全**（🔴 使用者上傳是敵意輸入）：檔名消毒（去 `/` 與 `..`）+ realpath 封閉檢查
+  （落點必須在 temp 根下）+ 副檔名白名單（文件/圖片允許，`.py`/`.sh` 等可執行類隔離不執行）
+  + 20MB 上限。守門反證確認封閉檢查有效。
+- **圖片多模態**（`gemini.describe_image`）：讀圖 → base64 inline_data → Gemini 文字描述，
+  僅使用者明確要求時呼叫（成本控制）。
+- **三階段生命週期**（`file_lifecycle.py`）：
+  `temp/{date}/`（未分析）→ `knowledge/raw/uploads/{source-id}/`（AI 分析後歸位，
+  帶來源符合 provenance）→ 正式目錄（artifacts/exports；文件走既有 wiki ingest）。
+  每次搬移寫 log 可稽核。source-id = `{date}-{序號}`；圖片帶 AI 描述 side-car md。
+- `handle_message` 加 `injected_text` 參數（檔案訊息的 `message.text` 是 None）。
+
+守門 12 條 + 反證。全 bot 測試 679 passed。
+🔴 過程抓到一個縮排 bug（別名函式誤插進 `handle_message` 函式體中間，導致後半邏輯脫離）
+—— 全套測試（group_policy 那條）擋下，印證「改函式簽名後要跑全套」。
+
 ## 1.3.0 (2026-09-27)
 
 ### ✨ TG 檔案/圖片上傳處理管道
